@@ -21,6 +21,7 @@
     "postgres:stop": "node scripts/dev-postgres.mjs stop",
     "verify:api": "node scripts/verify-api.mjs",
     "verify:pages": "node scripts/verify-pages.mjs",
+    "verify:share-target": "node scripts/verify-share-target.mjs",
     "app:web": "node shell/scripts/build-web.mjs",
     "app:pack": "node shell/scripts/pack.mjs",
     "app:build": "node shell/scripts/pack.mjs",

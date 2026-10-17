@@ -149,9 +149,21 @@ internal static class DisplayInfo
 
         var displays = new List<Display>();
         var index = 0;
+        // 适配器描述:"Virtual Display Driver" 这类信息只在这一层
+        var adapters = AdapterDescriptions();
+
         foreach (var item in found.OrderByDescending((m) => m.Primary).ThenBy((m) => m.X))
         {
-            var description = DescribeDevice(item.DeviceName);
+            var monitorDescription = DescribeDevice(item.DeviceName);
+            var adapterDescription = adapters.TryGetValue(item.DeviceName, out var a) ? a : string.Empty;
+
+            // 适配器描述更能说明"这块屏是谁提供的",优先用它做虚拟屏判断;
+            // 展示时把两者都带上,便于用户核对。
+            var looksVirtual = LooksVirtual(adapterDescription) || LooksVirtual(monitorDescription);
+            var description = string.IsNullOrWhiteSpace(adapterDescription)
+                ? monitorDescription
+                : $"{adapterDescription} / {monitorDescription}";
+
             displays.Add(new Display(
                 index,
                 item.DeviceName,
@@ -161,7 +173,7 @@ internal static class DisplayInfo
                 item.Width,
                 item.Height,
                 item.Primary,
-                LooksVirtual(description)));
+                looksVirtual));
             index += 1;
         }
 
@@ -202,6 +214,40 @@ internal static class DisplayInfo
 
         var text = description.ToLowerInvariant();
         return keywords.Any((k) => text.Contains(k, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// 取每块显示器所属**适配器**的描述。
+    ///
+    /// 为什么不能只用显示器描述:虚拟显示驱动创建的屏,显示器那一层报的是
+    /// "Generic PnP Monitor"(和真实屏一模一样),但**适配器**那一层报的是
+    /// "Virtual Display Driver"。只看显示器描述就分辨不出虚拟屏,
+    /// 界面也就无法标注"这是你的虚拟副屏"。
+    ///
+    /// EnumDisplayDevices(null, i, ...) 枚举的是显示适配器,
+    /// 返回的 DeviceName 形如 \\.\DISPLAY2,正好与 GetMonitorInfo 的 szDevice 对应。
+    /// </summary>
+    private static Dictionary<string, string> AdapterDescriptions()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            for (uint index = 0; index < 16; index += 1)
+            {
+                var data = new DisplayDevice { cb = Marshal.SizeOf<DisplayDevice>() };
+                if (!EnumDisplayDevices(null, index, ref data, 0)) break;
+                if (string.IsNullOrWhiteSpace(data.DeviceName)) continue;
+
+                map[data.DeviceName] = data.DeviceString ?? string.Empty;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("枚举显示适配器失败:" + ex.Message);
+        }
+
+        return map;
     }
 
     /// <summary>给日志/报告用的一行摘要</summary>

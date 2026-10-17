@@ -46,3 +46,7 @@ Thumbs.db
 # 运行期数据目录(绿色版会在这里生成 SQLite 与日志)
 /第二块屏-数据
 /VirtualDesk-data
+
+# 显示器枚举调试残留
+/.disptest
+

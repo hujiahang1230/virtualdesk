@@ -45,6 +45,26 @@ interface NetworkResponse {
   primary: string | null;
 }
 
+interface DisplayEntry {
+  index: number;
+  device: string;
+  description: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  primary: boolean;
+  likelyVirtual: boolean;
+}
+
+interface DisplayListResponse {
+  displays: DisplayEntry[];
+  count: number;
+  canExtend: boolean;
+  recommendedIndex: number | null;
+  recommendedSize: string | null;
+}
+
 const STATUS_TEXT: Record<HostStatus, string> = {
   idle: '未开始共享',
   capturing: '正在等待你选择要共享的屏幕…',
@@ -64,6 +84,79 @@ const STATUS_DOT: Record<HostStatus, 'live' | 'busy' | 'error' | 'idle'> = {
   stopped: 'idle',
   error: 'error',
 };
+
+/** 对"这一次共享的目标对不对"的判定结果 */
+type ShareTargetCheck = { kind: 'ok' | 'hint' | 'warn'; text: string } | null;
+
+/**
+ * 判断用户共享的是不是"那块该共享的屏"。
+ *
+ * 背景:副屏场景要求共享**虚拟显示器**。如果共享的是主屏,平板看到的就是镜像,
+ * 但画面完全正常,用户几乎不可能自己发现。浏览器不告诉我们"共享了哪一块",
+ * 只给分辨率和 displaySurface,所以这里只能用分辨率做启发式判断。
+ *
+ * 已知局限:若虚拟屏与主屏分辨率完全相同,仅凭分辨率无法区分 —— 这种情况返回
+ * 一条"软提示"而不是断言,避免误报。
+ */
+function checkShareTarget(
+  picked: { width: number; height: number; surface: string | null },
+  list: DisplayListResponse | null,
+): ShareTargetCheck {
+  if (!list || list.displays.length === 0) return null;
+
+  const sizeText = `${picked.width}×${picked.height}`;
+
+  if (picked.surface === 'window' || picked.surface === 'browser') {
+    return {
+      kind: 'warn',
+      text: `你共享的是一个${picked.surface === 'browser' ? '浏览器标签页' : '窗口'},不是整块屏幕。` +
+        '副屏需要共享「整块屏幕」,否则桌面不会扩展过去。请停止后重新共享。',
+    };
+  }
+
+  if (list.displays.length === 1) {
+    return {
+      kind: 'warn',
+      text: '系统里只检测到 1 块屏幕,所以平板看到的是**镜像**,不是扩展屏。' +
+        '要真正扩展桌面,需要先装一个虚拟显示驱动(步骤见 README)。',
+    };
+  }
+
+  const primary = list.displays.find((d) => d.primary);
+  const others = list.displays.filter((d) => !d.primary);
+
+  const matchesPrimary = Boolean(primary && primary.width === picked.width && primary.height === picked.height);
+  const matchedOther = others.find((d) => d.width === picked.width && d.height === picked.height);
+
+  if (matchedOther && !matchesPrimary) {
+    return {
+      kind: 'ok',
+      text: `已共享扩展屏(${sizeText}),平板看到的应该是扩展桌面而不是镜像。`,
+    };
+  }
+
+  if (matchesPrimary && !matchedOther) {
+    return {
+      kind: 'warn',
+      text: `你共享的是主屏(${sizeText}),平板看到的会是镜像。` +
+        `请停止后重新共享,并在选择器里挑那块 ${list.recommendedSize ?? '扩展'} 的屏幕。`,
+    };
+  }
+
+  if (matchesPrimary && matchedOther) {
+    return {
+      kind: 'hint',
+      text: `主屏和扩展屏都是 ${sizeText},无法自动判断你选了哪一块。` +
+        '如果平板显示的是主屏(镜像)而不是扩展桌面,请重新共享并点另一块。',
+    };
+  }
+
+  return {
+    kind: 'hint',
+    text: `你共享的画面是 ${sizeText},和检测到的显示器分辨率都不完全一致(可能是窗口或缩放导致)。` +
+      '如果平板看到的是镜像而不是扩展桌面,请重新共享并选择整块屏幕。',
+  };
+}
 
 export default function HostPage() {
   const previewRef = useRef<HTMLVideoElement | null>(null);
@@ -85,6 +178,11 @@ export default function HostPage() {
   const [candidateCount, setCandidateCount] = useState<number | null>(null);
   const [supportWarning, setSupportWarning] = useState<string | null>(null);
   const [lanIp, setLanIp] = useState<string | null>(null);
+
+  /** 系统里的显示器列表。副屏场景要靠它判断"该共享哪一块"。 */
+  const [displayList, setDisplayList] = useState<DisplayListResponse | null>(null);
+  /** 采集后对"是否选错屏"的判定结果 */
+  const [shareCheck, setShareCheck] = useState<ShareTargetCheck>(null);
 
   // 桌面版(.exe)外壳的状态;浏览器里为 null,页面照旧走 Web 逻辑
   const desktop = useDesktop();
@@ -122,6 +220,22 @@ export default function HostPage() {
       })
       .catch(() => {
         /* 拿不到局域网地址也不影响主流程 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 系统里有哪些显示器。拿不到就当未知处理,不阻塞共享流程。
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch('/api/displays')
+      .then((res) => (res.ok ? (res.json() as Promise<DisplayListResponse>) : null))
+      .then((data) => {
+        if (!cancelled && data) setDisplayList(data);
+      })
+      .catch(() => {
+        /* 老版本宿主没有这个接口,忽略 */
       });
     return () => {
       cancelled = true;
@@ -204,6 +318,7 @@ export default function HostPage() {
       setStats(null);
       setCandidateCount(null);
       setIceState('new');
+      setShareCheck(null);
       setStatus(nextStatus);
       setError(message ?? null);
     },
@@ -346,6 +461,19 @@ export default function HostPage() {
       setStreamInfo(track.label || '屏幕共享');
       step('轨道参数:' + describeTrack(track));
 
+      // 副屏场景最容易犯的错:选择器里点成了主屏,于是平板看到的是镜像。
+      // 画面本身完全正常,用户不会察觉,所以这里主动核对一次。
+      const chosen = track.getSettings();
+      const picked = {
+        width: chosen.width ?? 0,
+        height: chosen.height ?? 0,
+        surface: chosen.displaySurface ?? null,
+      };
+      step(`共享目标:${picked.width}×${picked.height},surface=${picked.surface ?? '未知'}`);
+      const targetCheck = checkShareTarget(picked, displayList);
+      setShareCheck(targetCheck);
+      if (targetCheck) step(`共享目标判定(${targetCheck.kind}):${targetCheck.text}`);
+
       if (previewRef.current) {
         previewRef.current.srcObject = stream;
         previewRef.current.muted = true;
@@ -406,7 +534,7 @@ export default function HostPage() {
       if (caught instanceof Error && caught.stack) step('堆栈:' + caught.stack.split('\n')[1]?.trim());
       teardown('error', message, 'startSharing 抛异常');
     }
-  }, [teardown, waitForAnswer, trace]);
+  }, [teardown, waitForAnswer, trace, displayList]);
 
   // 连接建立后持续刷新统计信息(定时器只创建一次,通过 ref 读取最新状态)
   useEffect(() => {
@@ -601,6 +729,71 @@ export default function HostPage() {
               </div>
             ) : null}
           </div>
+
+          {/* 副屏引导:告诉他该选哪一块屏 */}
+          {displayList ? (
+            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-xs">
+              {displayList.canExtend ? (
+                <>
+                  <p className="flex items-center gap-2 font-semibold text-emerald-300">
+                    <span>✅</span>
+                    检测到 {displayList.count} 块屏幕 · 可以扩展
+                  </p>
+                  <p className="mt-2 leading-relaxed text-slate-400">
+                    点「开始共享」后,在选择器里请选
+                    {displayList.recommendedSize ? (
+                      <span className="mx-1 font-mono text-cyan-300">{displayList.recommendedSize}</span>
+                    ) : (
+                      ' 非主屏那一块 '
+                    )}
+                    —— 那才是扩展屏。选成主屏的话,平板看到的会是镜像。
+                  </p>
+                  <ul className="mt-2.5 space-y-1">
+                    {displayList.displays.map((d) => (
+                      <li key={d.device} className="flex items-center gap-2 text-slate-500">
+                        <span className="font-mono">
+                          {d.width}×{d.height}
+                        </span>
+                        <span>{d.primary ? '主屏(笔记本自带)' : d.likelyVirtual ? '虚拟副屏' : '扩展屏'}</span>
+                        {d.index === displayList.recommendedIndex ? (
+                          <span className="rounded bg-cyan-400/15 px-1.5 py-0.5 text-cyan-300">选这块</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              ) : (
+                <>
+                  <p className="flex items-center gap-2 font-semibold text-amber-300">
+                    <span>⚠</span>
+                    只检测到 1 块屏幕 · 当前只能镜像
+                  </p>
+                  <p className="mt-2 leading-relaxed text-slate-400">
+                    平板会显示这块屏的复制品,不能把桌面扩展过去 —— 因为系统里还没有第二块屏。
+                    要真扩展到平板,需要先装一个虚拟显示驱动。
+                  </p>
+                  <Link href="/" className="mt-2 inline-block text-cyan-300 underline-offset-2 hover:underline">
+                    了解为什么需要虚拟显示驱动 →
+                  </Link>
+                </>
+              )}
+            </div>
+          ) : null}
+
+          {/* 采集后的目标核对结果 */}
+          {shareCheck ? (
+            <div
+              className={`mt-3 rounded-xl border p-4 text-xs leading-relaxed ${
+                shareCheck.kind === 'ok'
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                  : shareCheck.kind === 'hint'
+                    ? 'border-slate-700 bg-slate-900/60 text-slate-300'
+                    : 'border-amber-500/40 bg-amber-500/10 text-amber-200'
+              }`}
+            >
+              {shareCheck.text}
+            </div>
+          ) : null}
 
           <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
             <Stat label="编码分辨率" value={stats?.width && stats?.height ? `${stats.width}×${stats.height}` : '—'} />

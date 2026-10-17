@@ -323,6 +323,42 @@ internal sealed class WebHost : IDisposable
             });
         }
 
+        // 显示器列表:副屏场景的关键信息。
+        // 前端据此提示"该共享哪一块",并在采集后判断用户是否选错了屏(选了主屏 = 镜像)。
+        if (path == "/api/displays" && request.Method == "GET")
+        {
+            var displays = DisplayInfo.Enumerate();
+            var items = new JsonArray();
+            foreach (var d in displays)
+            {
+                items.Add(new JsonObject
+                {
+                    ["index"] = d.Index,
+                    ["device"] = d.DeviceName,
+                    ["description"] = d.Description,
+                    ["x"] = d.X,
+                    ["y"] = d.Y,
+                    ["width"] = d.Width,
+                    ["height"] = d.Height,
+                    ["primary"] = d.IsPrimary,
+                    ["likelyVirtual"] = d.IsLikelyVirtual,
+                });
+            }
+
+            // 建议共享哪一块:优先"非主屏 + 看起来是虚拟屏",否则取第一个非主屏
+            var recommended = displays.FirstOrDefault((d) => !d.IsPrimary && d.IsLikelyVirtual)
+                              ?? displays.FirstOrDefault((d) => !d.IsPrimary);
+
+            return Json(200, new JsonObject
+            {
+                ["displays"] = items,
+                ["count"] = displays.Count,
+                ["canExtend"] = displays.Count >= 2,
+                ["recommendedIndex"] = recommended?.Index,
+                ["recommendedSize"] = recommended is null ? null : $"{recommended.Width}×{recommended.Height}",
+            });
+        }
+
         if (path == "/api/network" && request.Method == "GET")
         {
             // 同时给出"实际已监听"的地址,让页面只推荐真正连得上的那个
@@ -353,6 +389,12 @@ internal sealed class WebHost : IDisposable
             var sharing = latest?.Offer is not null;
             var connected = latest?.Answer is not null;
 
+            // 顺带报一下显示器情况:控制面板要显示"能不能扩展",且显示器是热插拔的
+            // (装完虚拟显示驱动不用重启程序),所以每次刷新都重新枚举。
+            var displays = DisplayInfo.Enumerate();
+            var target = displays.FirstOrDefault((d) => !d.IsPrimary && d.IsLikelyVirtual)
+                         ?? displays.FirstOrDefault((d) => !d.IsPrimary);
+
             return Json(200, new JsonObject
             {
                 ["activeSessions"] = _store.CountActive(),
@@ -363,6 +405,9 @@ internal sealed class WebHost : IDisposable
                 ["localUrl"] = LocalUrl,
                 ["lanUrl"] = LanUrl,
                 ["lanUrls"] = new JsonArray([.. LanUrls.Select((u) => (JsonNode)JsonValue.Create(u)!)]),
+                ["displayCount"] = displays.Count,
+                ["canExtend"] = displays.Count >= 2,
+                ["recommendedDisplaySize"] = target is null ? null : $"{target.Width}×{target.Height}",
             });
         }
 

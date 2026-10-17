@@ -22,6 +22,10 @@ internal static class Program
         // %TEMP% 不可写时会在很早的地方抛 UnauthorizedAccessException,连日志都来不及写。
         AppPaths.EnsureWritableTemp();
 
+        // 第二件事:声明 DPI 感知,否则枚举到的显示器分辨率会被按缩放比虚拟化
+        // (1920×1080 在 125% 缩放下读成 1536×864),和浏览器报告的物理像素对不上。
+        DisplayInfo.EnsureDpiAwareness();
+
         if (args.Any((a) => a is "--diagnose" or "-d"))
         {
             RunDiagnose();
@@ -229,6 +233,34 @@ internal static class Program
                 var (address, label) = lan[i];
                 var hint = i == 0 ? "(推荐给平板)" : "(平板通常访问不到)";
                 lines.Add($"  [OK  ] 局域网地址: {address}  ({label}) {hint}");
+            }
+        }
+
+        // 显示器:决定"能不能扩展成副屏"
+        lines.Add("");
+        var displays = DisplayInfo.Enumerate();
+        if (displays.Count == 0)
+        {
+            lines.Add("  [问题] 显示器: 枚举失败");
+        }
+        else
+        {
+            foreach (var d in displays)
+            {
+                var tags = (d.IsPrimary ? " 主屏" : "") + (d.IsLikelyVirtual ? " 虚拟" : "");
+                lines.Add($"  [OK  ] 显示器: {d.Width}×{d.Height}{tags}  ({d.Description})");
+            }
+
+            if (displays.Count >= 2)
+            {
+                var target = displays.FirstOrDefault((d) => !d.IsPrimary && d.IsLikelyVirtual)
+                             ?? displays.FirstOrDefault((d) => !d.IsPrimary);
+                lines.Add($"  [OK  ] 可以扩展桌面 —— 共享时请选 {target?.Width}×{target?.Height} 那一块");
+            }
+            else
+            {
+                lines.Add("  [注意] 只有 1 块屏幕 —— 当前只能镜像,不能扩展");
+                lines.Add("         要当副屏用,需要先安装虚拟显示驱动(见 README「把平板当副屏」)");
             }
         }
 

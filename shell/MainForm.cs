@@ -56,6 +56,15 @@ internal sealed class MainForm : Form
     private readonly Label _step2 = new() { AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5F) };
     private readonly Label _step3 = new() { AutoSize = true, Font = new Font("Microsoft YaHei UI", 9.5F) };
 
+    /// <summary>能不能扩展桌面(有几块屏)—— 副屏场景最要紧的一行</summary>
+    private readonly Label _displayHint = new()
+    {
+        AutoSize = false,
+        Font = new Font("Microsoft YaHei UI", 9F),
+        ForeColor = Color.FromArgb(148, 163, 184),
+        Text = "显示器:正在检测…",
+    };
+
     private readonly LinkLabel _computerLink = new()
     {
         AutoSize = true,
@@ -191,9 +200,13 @@ internal sealed class MainForm : Form
         _qrLink.Location = new Point(24, 186);
         _qrLink.LinkClicked += (_, _) => Open($"{_localUrl}/qr");
 
+        // 能不能扩展 —— 放在步骤上方,因为它决定整个过程是否成立
+        _displayHint.Location = new Point(24, 214);
+        _displayHint.Size = new Size(760, 22);
+
         var steps = new FlowLayoutPanel
         {
-            Location = new Point(24, 222),
+            Location = new Point(24, 242),
             Width = 740,
             Height = 116,
             FlowDirection = FlowDirection.TopDown,
@@ -208,6 +221,7 @@ internal sealed class MainForm : Form
         body.Controls.Add(_codeCaption);
         body.Controls.Add(_codeLabel);
         body.Controls.Add(_qrLink);
+        body.Controls.Add(_displayHint);
         body.Controls.Add(steps);
         Controls.Add(body);
         body.BringToFront();
@@ -256,6 +270,9 @@ internal sealed class MainForm : Form
             var code = node?["code"]?.GetValue<string>();
             var sharing = node?["sharing"]?.GetValue<bool>() ?? false;
             var connected = node?["connected"]?.GetValue<bool>() ?? false;
+            var displayCount = node?["displayCount"]?.GetValue<int>() ?? 0;
+            var canExtend = node?["canExtend"]?.GetValue<bool>() ?? false;
+            var recommendedSize = node?["recommendedDisplaySize"]?.GetValue<string>();
 
             if (code != _currentCode)
             {
@@ -263,6 +280,7 @@ internal sealed class MainForm : Form
                 _codeLabel.Text = code is null ? "— — — — — —" : string.Join(' ', code.ToCharArray());
             }
 
+            UpdateDisplayHint(displayCount, canExtend, recommendedSize);
             _firstRefreshDone = true;
             UpdateSteps(code, sharing, connected);
         }
@@ -270,6 +288,35 @@ internal sealed class MainForm : Form
         {
             if (!_firstRefreshDone) _detail.Text = "正在读取状态…";
             Log.Warn("读取状态失败:" + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 更新"能不能扩展"这一行。
+    ///
+    /// 副屏场景的核心前提是系统里有两块屏。装完虚拟显示驱动后不用重启本程序,
+    /// 这个提示会随状态刷新自动变过来。
+    /// </summary>
+    private void UpdateDisplayHint(int count, bool canExtend, string? recommendedSize)
+    {
+        if (count == 0)
+        {
+            _displayHint.Text = "显示器:未检测到(读取失败)";
+            _displayHint.ForeColor = Color.FromArgb(148, 163, 184);
+            return;
+        }
+
+        if (canExtend)
+        {
+            _displayHint.Text = recommendedSize is null
+                ? $"✅ 检测到 {count} 块屏幕 · 共享时请选非主屏那一块"
+                : $"✅ 检测到 {count} 块屏幕 · 共享时请选 {recommendedSize} 那块(扩展屏)";
+            _displayHint.ForeColor = Color.FromArgb(74, 222, 128);
+        }
+        else
+        {
+            _displayHint.Text = "⚠ 只有 1 块屏幕 · 当前是镜像,不是扩展。装虚拟显示驱动后会自动变成可扩展";
+            _displayHint.ForeColor = Color.FromArgb(250, 204, 21);
         }
     }
 

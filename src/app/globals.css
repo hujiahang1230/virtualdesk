@@ -1,0 +1,210 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans:
+    system-ui, -apple-system, 'Segoe UI', 'Microsoft YaHei', 'PingFang SC',
+    'Hiragino Sans GB', sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, 'Courier New', monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --vd-bg: #070b14;
+  --vd-bg-soft: #0d1424;
+  --vd-border: #1f2b45;
+  --vd-accent: #22d3ee;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* 平板上禁止整页左右晃动 */
+  overflow-x: hidden;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1100px 620px at 12% -8%, rgba(34, 211, 238, 0.16), transparent 60%),
+    radial-gradient(900px 520px at 88% 4%, rgba(129, 140, 248, 0.16), transparent 62%),
+    var(--vd-bg);
+  color: #e2e8f5;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+/* ---------- 可复用小组件 ---------- */
+
+.vd-card {
+  border: 1px solid var(--vd-border);
+  border-radius: 1rem;
+  background: linear-gradient(180deg, rgba(19, 27, 47, 0.92), rgba(11, 16, 30, 0.92));
+  box-shadow: 0 18px 40px -28px rgba(0, 0, 0, 0.9);
+}
+
+.vd-panel {
+  border: 1px solid var(--vd-border);
+  border-radius: 0.875rem;
+  background: rgba(8, 12, 24, 0.72);
+}
+
+.vd-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--vd-border);
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: #a9bad9;
+  background: rgba(148, 163, 184, 0.08);
+  white-space: nowrap;
+}
+
+.vd-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--vd-border);
+  padding: 0.65rem 1.1rem;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.1);
+  color: #e2e8f5;
+  transition:
+    transform 0.12s ease,
+    background 0.15s ease,
+    border-color 0.15s ease;
+  /* 触屏点击不出现蓝色高亮 */
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+.vd-btn:hover:not(:disabled) {
+  background: rgba(148, 163, 184, 0.18);
+  border-color: #33456b;
+}
+
+.vd-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.vd-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.vd-btn-primary {
+  border-color: rgba(34, 211, 238, 0.5);
+  background: linear-gradient(180deg, #22d3ee, #0ea5b7);
+  color: #04121a;
+}
+
+.vd-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #4fe3f6, #12b6ca);
+  border-color: rgba(34, 211, 238, 0.7);
+}
+
+.vd-btn-danger {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+}
+
+.vd-btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.26);
+}
+
+.vd-code-input {
+  font-family: var(--font-mono);
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
+  font-size: 2rem;
+  text-align: center;
+  width: 100%;
+  border-radius: 0.875rem;
+  border: 1px solid var(--vd-border);
+  background: rgba(2, 6, 16, 0.85);
+  color: #e6f6ff;
+  padding: 0.9rem 0.5rem;
+  outline: none;
+}
+
+.vd-code-input:focus {
+  border-color: rgba(34, 211, 238, 0.65);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18);
+}
+
+.vd-status-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 999px;
+  background: #64748b;
+}
+
+.vd-status-dot[data-state='live'] {
+  background: #34d399;
+  box-shadow: 0 0 0 4px rgba(52, 211, 153, 0.18);
+}
+
+.vd-status-dot[data-state='busy'] {
+  background: #fbbf24;
+  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.16);
+  animation: vd-pulse 1.4s ease-in-out infinite;
+}
+
+.vd-status-dot[data-state='error'] {
+  background: #f87171;
+  box-shadow: 0 0 0 4px rgba(248, 113, 113, 0.16);
+}
+
+@keyframes vd-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.vd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.vd-table th,
+.vd-table td {
+  border-bottom: 1px solid rgba(31, 43, 69, 0.8);
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.vd-table th {
+  color: #9fb2d4;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.07);
+  white-space: nowrap;
+}
+
+/* 平板/窄屏下表格允许横向滚动,避免撑破布局 */
+.vd-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.vd-step-arrow::after {
+  content: '→';
+  color: #3d537d;
+  font-size: 1.1rem;
+}
+
+@media (max-width: 1023px) {
+  .vd-step-arrow::after {
+    content: '↓';
+  }
+}

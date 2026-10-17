@@ -1,0 +1,75 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    第二块屏 · 单文件免安装版
+
+    设计目标:
+      - 一个 exe 走天下:不需要 Node、PostgreSQL、.NET 运行时
+      - 前端是静态导出的 HTML/JS,以 zip 形式嵌进程序集
+      - 信令数据存在 SQLite 里(只需要一张 key/value 表,PostgreSQL 太重)
+      - 界面由系统浏览器打开(内嵌内核拿不到 getDisplayMedia,无法采集屏幕)
+
+    重要:这个工程**不能**放在项目根的 app/ 目录里。
+    Next 会优先把根 app/ 当作路由目录,导致 src/app 被完全忽略,
+    构建会退化成一个空的 pages router(只导出 /404)。所以这里用 shell/。
+
+    体积构成预期:自包含 .NET 运行时 + 前端 1MiB,压缩后约 20MiB。
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!--
+      内部程序用 ASCII 文件名:它会作为原生启动器 CreateProcess 的目标,
+      在非 Unicode 代码页下中文文件名容易出问题。用户看到的是启动器「第二块屏.exe」。
+    -->
+    <AssemblyName>VirtualDeskCore</AssemblyName>
+    <RootNamespace>VirtualDesk.App</RootNamespace>
+    <Product>第二块屏</Product>
+    <AssemblyTitle>第二块屏</AssemblyTitle>
+    <Company>VirtualDesk</Company>
+    <Version>2.0.0</Version>
+    <FileVersion>2.0.0.0</FileVersion>
+    <Copyright>第二块屏 · 把平板变成电脑的第二块显示屏</Copyright>
+
+    <!-- 自包含单文件:目标机器什么都不用装 -->
+    <SelfContained>true</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- 不裁剪:Microsoft.Data.Sqlite 与 WinForms 都依赖反射,裁剪风险大于收益 -->
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationDefaultFont>Microsoft YaHei UI, 9pt</ApplicationDefaultFont>
+
+    <!-- 前端嵌入包由 shell/scripts/build-web.mjs 生成 -->
+    <WebBundlePath Condition="'$(WebBundlePath)' == ''">$(MSBuildProjectDirectory)\web.zip</WebBundlePath>
+    <IconPath>$(MSBuildProjectDirectory)\assets\icon.ico</IconPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 只需要一个极小的嵌入式键值存储,不用完整数据库服务 -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(WebBundlePath)')">
+    <EmbeddedResource Include="$(WebBundlePath)" LogicalName="VirtualDesk.Web.zip" />
+  </ItemGroup>
+
+  <!-- ApplicationIcon 是属性,必须放 PropertyGroup;这里按条件单独设一次 -->
+  <PropertyGroup Condition="Exists('$(IconPath)')">
+    <ApplicationIcon>$(IconPath)</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(IconPath)')">
+    <!-- 同一个 ico 也作为嵌入资源,运行时用来给窗口设图标 -->
+    <EmbeddedResource Include="$(IconPath)" LogicalName="VirtualDesk.Icon.ico" />
+  </ItemGroup>
+
+</Project>

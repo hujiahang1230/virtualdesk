@@ -1,0 +1,14 @@
+# pnpm 专属配置(pnpm 会读这个文件,其他包管理器忽略它)。
+
+# Next.js 运行时会 require('react' / 'styled-jsx') 等包,
+# 扁平的 node_modules 结构与 npm 一致,最不容易出问题。
+nodeLinker: hoisted
+
+# pnpm 默认拦截依赖的安装脚本;esbuild 需要执行安装脚本才能解压出可执行文件,
+# 而 drizzle-kit 依赖 esbuild,因此显式允许。
+allowBuilds:
+  esbuild: true
+  sharp: true
+
+# 关闭"新包发布冷却期"检查,避免锁文件里的包被判为违反策略。
+minimumReleaseAge: 0

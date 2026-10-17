@@ -289,9 +289,10 @@ export default function HostPage() {
 
     try {
       // 先用理想参数;被系统/硬件拒绝时自动降级,而不是直接失败。
-      // 1080p60 在 4K 屏、带缩放的多屏环境里并不总被接受。
+      // 首选参数不限制宽高 —— 副屏场景下虚拟显示器可能是竖屏或 1440p,
+      // 写死上限会被降采样。真正的分辨率上限由显示器本身决定。
       const attempts: Array<{ label: string; constraints: DisplayMediaStreamOptions }> = [
-        { label: '1080p60', constraints: DISPLAY_CAPTURE_CONSTRAINTS },
+        { label: '显示器原生分辨率 · 60fps', constraints: DISPLAY_CAPTURE_CONSTRAINTS },
         {
           label: '720p30(降级)',
           constraints: {
@@ -313,7 +314,9 @@ export default function HostPage() {
         step(`已发出 getDisplayMedia 请求(参数:${attempt.label}),等待你在系统弹窗里选择共享目标…`);
         try {
           stream = await navigator.mediaDevices.getDisplayMedia(attempt.constraints);
-          if (attempt.label !== '1080p60') step(`已降级为「${attempt.label}」并采集成功`);
+          if (attempt.label !== '显示器原生分辨率 · 60fps') {
+            step(`已降级为「${attempt.label}」并采集成功`);
+          }
           break;
         } catch (captureError) {
           lastError = captureError;
@@ -750,7 +753,7 @@ export default function HostPage() {
           <div className="vd-card p-5 text-xs leading-relaxed text-slate-400">
             <h2 className="text-sm font-semibold text-slate-200">本次连接的技术细节</h2>
             <ul className="mt-3 space-y-1.5">
-              <li>· 采集约束:1080p(1920×1080)、最高 60fps、不采集音频</li>
+              <li>· 采集约束:按显示器原生分辨率、最高 60fps、不采集音频(副屏场景不做降采样)</li>
               <li>· contentHint = detail,优先保证文字清晰</li>
               <li>· 码率上限 8 Mbps,通过 sendEncodings 与 setParameters 双重限制</li>
               <li>· 非 trickle ICE:等待候选者收集完成(超时 4 秒)后一次性提交完整 SDP</li>

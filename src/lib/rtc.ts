@@ -33,11 +33,17 @@ export const MAX_VIDEO_BITRATE = 8_000_000;
 /** 自动降低码率的阈值:每 10 秒统计一次,超过则按 0.8 系数下调 */
 export const VIDEO_BITRATE_ADAPT_INTERVAL_MS = 10_000;
 
-/** 推荐的采集参数:1080p、最高 60fps、不采集音频 */
+/**
+ * 采集参数:按显示器原始分辨率、最高 60fps、不采集音频。
+ *
+ * 为什么不写死宽高上限:副屏场景下目标是一块**虚拟显示器**,它的分辨率由用户
+ * 设定 —— 可能是 1920×1080 横屏,也可能是 1200×1920 竖屏,甚至 2560×1440。
+ * 早期版本写了 `max: 1920 / 1080`,遇到竖屏或高分辨率虚拟屏会被降采样或裁切,
+ * 副屏就"糊了"或"缺一块"。这里去掉硬上限,让浏览器按源的原生分辨率输出;
+ * 码率仍由 MAX_VIDEO_BITRATE 控制,带宽不会被无限放大。
+ */
 export const DISPLAY_CAPTURE_CONSTRAINTS: DisplayMediaStreamOptions = {
   video: {
-    width: { ideal: 1920, max: 1920 },
-    height: { ideal: 1080, max: 1080 },
     frameRate: { ideal: 60, max: 60 },
   },
   audio: false,

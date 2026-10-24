@@ -75,6 +75,39 @@ if (skipWeb) {
 if (!existsSync(zipPath)) throw new Error('缺少 web.zip:' + zipPath);
 console.log(`[pack] 嵌入包 ${mb(statSync(zipPath).size)}`);
 
+// 1.5) 平板端 APK(嵌入进 exe,让程序能自己把 App 装到平板上)
+//
+// 只在 APK 缺失、或 Java 源码比 APK 新时才重建 —— 构建 APK 需要
+// .android-build 里的工具链(用 tools/fetch-android-toolchain.mjs 获取)。
+const apkPath = join(projectRoot, 'tools', 'apk', 'virtualdesk-viewer.apk');
+const javaSource = join(projectRoot, 'android', 'app', 'src', 'main', 'java',
+  'com', 'virtualdesk', 'viewer', 'MainActivity.java');
+const manifestSource = join(projectRoot, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+
+function apkNeedsBuild() {
+  if (!existsSync(apkPath)) return true;
+  const apkTime = statSync(apkPath).mtimeMs;
+  for (const source of [javaSource, manifestSource]) {
+    if (existsSync(source) && statSync(source).mtimeMs > apkTime) return true;
+  }
+  return false;
+}
+
+if (apkNeedsBuild()) {
+  const toolchain = join(projectRoot, '.android-build', 'sdk', 'build-tools', '34.0.0', 'aapt2.exe');
+  if (!existsSync(toolchain)) {
+    console.warn('[pack] ⚠ 缺少 Android 工具链,跳过 APK 构建。');
+    console.warn('       先运行:node --use-system-ca tools/fetch-android-toolchain.mjs');
+    console.warn('       当前 exe 将不包含平板 App,需要手动装 APK。');
+  } else {
+    console.log('[pack] 构建平板端 APK…');
+    run('node', [join(projectRoot, 'tools', 'build-apk.mjs')], { cwd: projectRoot });
+  }
+} else {
+  console.log('[pack] 复用现有 APK:' + apkPath);
+}
+if (existsSync(apkPath)) console.log(`[pack] 平板 APK ${(statSync(apkPath).size / 1024).toFixed(1)} KiB`);
+
 // 2) 自包含单文件发布
 //
 // 清理 dist 时逐项删:如果上一轮留下的数据目录被系统/杀软锁住,

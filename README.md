@@ -566,16 +566,107 @@ codec_name=h264  width=1920  height=1080
 
 打包后的 `第二块屏.exe --stream` 同样验证通过(启动器会转发参数)。
 
-### 6.6 还没做的
+### 6.6 一键副屏:ADB + 自研 Android App
+
+上一条的 VLC 方案只是过渡:LVC 自带缓冲,延迟通常 100~500ms,而且平板端还得手动开播放器。
+这一条把两端都换成自己的东西 —— **平板端不再需要浏览器,也不需要任何第三方播放器**。
+
+```powershell
+第二块屏.exe --stream-app
+```
+
+执行后 PC 端会依次完成(平板上**不需要任何操作**):
+
+| 步骤 | 用到的能力 | 作用 |
+| --- | --- | --- |
+| 找设备 | `adb devices` | 确认平板已连接且已授权 |
+| 建隧道 | `adb reverse tcp:5000 tcp:5000` | 平板上的 `127.0.0.1:5000` 直达 PC,**不需要配任何 IP** |
+| 装 App | `adb install -r` | 自动安装/升级平板端 App(APK 内嵌在 exe 里) |
+| 推流 | ffmpeg + `h264_metadata=aud=insert` | 裸 H.264(不是 MPEG-TS),App 直接喂解码器 |
+| 拉起 | `adb shell am start` | 自动打开 App 并全屏 |
+| 常亮 | `adb shell svc power stayon true` | 副屏不会自己熄屏 |
+
+#### 为什么可以不用 VLC
+
+Android **没有**内置的流播放能力。所以"不用浏览器、也不用第三方 App"的唯一办法,
+就是自己写一个客户端。这个客户端只做三件事:
+
+1. 连 `127.0.0.1:5000`(`adb reverse` 隧道)
+2. 读 12 字节头拿到分辨率
+3. 把裸 H.264 按 AUD 切帧,喂给 `MediaCodec` 硬解,渲染到 `SurfaceView`
+
+没有解封装、没有缓冲池,从收到帧到上屏只有解码耗时。
+
+#### 协议(比 MPEG-TS 简单)
+
+```
+"VDS1"            4 字节魔数
+width  (int32 LE) 4 字节
+height (int32 LE) 4 字节
+之后:连续 Annex-B H.264,已用 h264_metadata=aud=insert 插入 AUD
+```
+
+**为什么要自己写头**:走标准路径 App 就得解析 SPS 才能知道分辨率(要实现指数哥伦布解码);
+而分辨率 PC 端本来就知道,12 字节头能省掉 App 一半的代码。
+
+**为什么要插入 AUD**:裸 H.264 没有帧边界,App 需要自己判断"一帧到哪结束"。
+插入 AUD(NAL type 9)后,每个 AUD 就是一次分界,App 只需按这个切分,不会花屏。
+
+#### 构建平板 App(不使用 Gradle)
+
+本机 `services.gradle.org` 不可达,所以不走 Gradle,而是直接调用官方 build-tools:
+
+```
+node --use-system-ca tools/fetch-android-toolchain.mjs   # 下载工具链到 .android-build/
+node tools/build-apk.mjs                                  # aapt2 → javac → d8 → 重打包 → zipalign → apksigner
+```
+
+| 步骤 | 工具 | 说明 |
+| --- | --- | --- |
+| 清单与资源表 | `aapt2 link` | 产出带二进制清单的 APK |
+| 编译 Java | `javac --release 17` | 本机 javac 是 25,必须降到 17 否则 d8 不认 class 版本 |
+| 转 dex | `d8` | 输出 classes.dex |
+| 塞进 APK | 自写 ZIP 读写 | 避免依赖,直接改 zip 结构 |
+| 对齐 | `zipalign -p 4` | APK 要求 4 字节对齐 |
+| 签名 | `apksigner` | 本地调试证书,verify 通过(v2 + v3 方案) |
+
+工具链放在项目内 `.android-build/`(已 gitignore),JDK 复用机器上 JetBrains IDE 自带的 JBR,
+不写系统目录、不需要管理员。
+
+#### 已验证 / 未验证
+
+已验证(PC 侧,全部本机实测):
+
+```
+工具链   aapt2 2.19 / adb 34.0.5 / d8 8.2.2 / javac 25
+APK      16.4 KiB,minSdk 26 / targetSdk 34,zipalign 校验通过,
+         apksigner verify 通过(v2 + v3 scheme)
+协议     VDS1 头正确解析;5 秒收到 1175 KiB、264 个 AUD;
+         ffprobe 确认裸流为 h264 1920x1080
+内嵌     exe 运行时能把 APK 释放到数据目录(16,787 字节)
+无设备   给出明确的 USB 调试开启指引,并以退出码 1 结束
+```
+
+**未验证**:App 在真机上的解码与显示 —— 构建环境碰不到实体平板,这一环需要装机后反馈。
+
+#### 前置条件(只有一条)
+
+平板上打开一次 **USB 调试**:`设置 → 关于平板 → 连点「版本号」7 次 → 开发者选项 → USB 调试`,
+插线后在弹窗里点「允许」(建议勾「一律允许」)。之后 PC 记住授权,不用重复。
+
+> vivo/iQOO 可能还有「USB 调试(安全设置)」开关;将来做触控回传时需要它。
+
+
+### 6.7 还没做的
 
 - **输入回传**(平板点按 → 电脑鼠标)。浏览器不能注入系统输入,需要一个原生程序调用
   `SendInput` 并把坐标映射到虚拟屏。没有这一步,副屏只能看、不能点。
+  好消息是 ADB 通道已经打通,坐标回传只需在现有 TCP 连接上反向发小包。
 - **60fps**:需要 Windows.Graphics.Capture 的 D3D11 互操作,当前 GDI 路径封顶 45fps。
-- **平板端 App**:现在靠 VLC 播放,不是自研客户端。要做低延迟(30~50ms)需要一个
-  MediaCodec 解码的 Android App,那需要 Android SDK。
+- **App 真机验证**:APK 已构建并签名,但构建环境碰不到实体平板,解码与显示需要装机反馈。
 - **竖屏与旋转**:平板竖着用时,虚拟屏也要设成竖屏,两者需配合;暂无自动同步。
-- **零外部依赖**:`--stream` 依赖 ffmpeg.exe。要彻底摆脱,需自研 IddCx 驱动 + 进程内
-  Media Foundation 编码。
+- **零外部依赖**:`--stream` / `--stream-app` 都依赖 ffmpeg.exe。要彻底摆脱,
+  需自研 IddCx 驱动 + 进程内 Media Foundation 编码。
 
 ---
 

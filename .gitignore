@@ -50,3 +50,8 @@ Thumbs.db
 # 显示器枚举调试残留
 /.disptest
 
+
+# Android 构建工具链与产物(体积大,可用 tools/fetch-android-toolchain.mjs 重新下载)
+/.android-build
+/tools/apk
+

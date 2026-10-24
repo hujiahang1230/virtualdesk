@@ -39,6 +39,14 @@ internal static class Program
             return;
         }
 
+        // --stream-app:推给自研 Android App(ADB 自动安装/启动/端口反代)
+        var appIndex = Array.IndexOf(args, "--stream-app");
+        if (appIndex >= 0)
+        {
+            RunAppStream(args, appIndex);
+            return;
+        }
+
         // --stream:原生推流(不走浏览器)。把虚拟显示器编码成 H.264 推到平板。
         //   --stream              自动猜平板地址(USB 链路的网关)
         //   --stream 127.0.0.1    指定地址,便于本机自测
@@ -109,6 +117,226 @@ internal static class Program
                 "第二块屏 启动失败",
                 ex.Message + "\n\n完整日志:\n" + (Log.File ?? Path.Combine(dataDir, "运行日志.txt")));
         }
+    }
+
+    /// <summary>
+    /// 面向自研 Android App 的一键副屏。
+    ///
+    /// 做的事情(全部由 PC 发起,平板上不需要任何操作):
+    ///   1. 找到 adb 与已连接的平板
+    ///   2. adb reverse 建立端口隧道(平板上的 127.0.0.1:port 直达 PC)
+    ///   3. adb install 安装/升级 APK
+    ///   4. 启动推流服务(等平板来连)
+    ///   5. adb shell am start 拉起 App,并保持屏幕常亮
+    ///
+    /// 用法:
+    ///   --stream-app                 默认端口 5000 / 30fps / 6M
+    ///   --stream-app 5000 30 8M      指定端口/帧率/码率
+    /// </summary>
+    private static void RunAppStream(string[] args, int index)
+    {
+        var dataDir = string.Empty;
+        try
+        {
+            dataDir = AppPaths.ResolveDataDir();
+            Log.Init(dataDir);
+            Log.Info("===== 一键副屏(Android App)=====");
+
+            var port = index + 1 < args.Length && int.TryParse(args[index + 1], out var p) ? p : 5000;
+            var fps = index + 2 < args.Length && int.TryParse(args[index + 2], out var f) ? f : 30;
+            var bitrate = index + 3 < args.Length ? args[index + 3] : "6M";
+
+            // ---- adb ----
+            // VD_SKIP_ADB=1 时跳过 ADB 环节,只起推流服务。
+            // 用途:平板已手动装好 App、或没有可用 adb 时仍能推流;也便于自动化测试协议。
+            var skipAdb = Environment.GetEnvironmentVariable("VD_SKIP_ADB") == "1";
+            string? adb = null;
+
+            if (!skipAdb)
+            {
+                adb = Adb.ResolveAdb();
+                if (adb is null)
+                {
+                    Fail("找不到 adb.exe。请把 platform-tools 里的 adb.exe 放到程序目录,或加入 PATH。\n" +
+                         "若想跳过 ADB 手工装 App,可设置环境变量 VD_SKIP_ADB=1。");
+                    return;
+                }
+                Log.Info("adb = " + adb);
+
+                var (serial, message) = Adb.FindDevice(adb);
+                if (serial is null)
+                {
+                    Fail("没有可用的平板:\n" + message);
+                    return;
+                }
+                Log.Info($"设备 {serial} 已就绪");
+            }
+            else
+            {
+                Log.Info("VD_SKIP_ADB=1,跳过 ADB(不安装/不启动,只推流)");
+                Console.WriteLine("  ⚠ 已跳过 ADB:请自行在平板上安装并打开「第二块屏」");
+            }
+
+            // ---- APK ----
+            // 即使跳过 ADB 也解析一次:一是把结果打出来便于排查,二是顺带验证
+            // 内嵌资源能否正常释放(单文件分发时这是唯一来源)。
+            var apk = ResolveApk();
+            if (apk is null)
+            {
+                if (!skipAdb)
+                {
+                    Fail("找不到 APK(virtualdesk-viewer.apk)。请把它放到程序目录,或先运行 tools/build-apk.mjs。");
+                    return;
+                }
+                Console.WriteLine("  ⚠ 未找到 APK(跳过 ADB 模式,不影响推流)");
+            }
+            else
+            {
+                Log.Info("APK = " + apk + $"({new FileInfo(apk).Length / 1024} KiB)");
+                Console.WriteLine($"  ✓ APK 就绪:{Path.GetFileName(apk)}({new FileInfo(apk).Length / 1024} KiB)");
+            }
+
+            // ---- 端口隧道 ----
+            if (!skipAdb)
+            {
+                if (!Adb.Reverse(adb!, port))
+                {
+                    Fail("adb reverse 失败,无法建立端口隧道。");
+                    return;
+                }
+                Log.Info($"端口隧道已建立:tcp:{port} → 平板 127.0.0.1:{port}");
+                Console.WriteLine($"  ✓ 端口隧道已建立(平板 127.0.0.1:{port} → 本机)");
+
+                // ---- 安装 ----
+                Console.WriteLine("  正在安装 App,首次可能需要十几秒…");
+                if (!Adb.Install(adb!, apk!))
+                {
+                    Fail("APK 安装失败。若提示 INSTALL_FAILED_UPDATE_INCOMPATIBLE,先在平板上卸载旧的「第二块屏」。");
+                    return;
+                }
+                Console.WriteLine("  ✓ App 已安装");
+            }
+
+            // ---- 推流服务(先起来,等平板连)----
+            using var server = new AppStreamServer(port, fps, bitrate);
+            server.Start();
+
+            Console.WriteLine();
+            Console.WriteLine("  一键副屏已就绪");
+            Console.WriteLine("    捕获区域  " + server.CaptureRegion);
+            Console.WriteLine("    编码器    " + server.Encoder);
+            Console.WriteLine($"    参数      {fps}fps, {bitrate}");
+            Console.WriteLine();
+
+            // ---- 启动 App ----
+            if (!skipAdb)
+            {
+                if (!Adb.StartApp(adb!, port))
+                {
+                    Console.WriteLine("  ⚠ 自动启动失败,请手动点开平板上的「第二块屏」");
+                }
+                else
+                {
+                    Console.WriteLine("  ✓ 已在平板上启动「第二块屏」");
+                }
+                Adb.StayAwake(adb!);
+            }
+
+            Console.WriteLine();
+            Console.WriteLine(skipAdb
+                ? "  等待平板上的「第二块屏」连接(按回车停止)…"
+                : "  平板端不需要任何操作。按回车停止…");
+
+            var stop = new ManualResetEventSlim(false);
+            if (!Console.IsInputRedirected)
+            {
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        Console.ReadLine();
+                    }
+                    catch
+                    {
+                        // 忽略
+                    }
+                    stop.Set();
+                });
+            }
+            else
+            {
+                Log.Info("标准输入已重定向,不等待回车;结束进程即可停止");
+            }
+
+            while (!stop.IsSet)
+            {
+                Thread.Sleep(500);
+            }
+
+            Log.Info("一键副屏结束");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("一键副屏启动失败:" + ex);
+            Fail(ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 找 APK:优先程序目录,其次开发时的构建输出,最后用 exe 内嵌的那份。
+    ///
+    /// 内嵌是为了"单文件分发":用户只拿到一个 第二块屏.exe,也能把 App 装到平板上,
+    /// 不需要另外拷一个 apk 文件。释放位置放在数据目录,便于复用与排查。
+    /// </summary>
+    private static string? ResolveApk()
+    {
+        string[] candidates =
+        [
+            Path.Combine(AppPaths.ExeDir, "virtualdesk-viewer.apk"),
+            Path.Combine(AppPaths.ExeDir, "..", "..", "..", "..", "..", "tools", "apk", "virtualdesk-viewer.apk"),
+        ];
+
+        foreach (var candidate in candidates)
+        {
+            try
+            {
+                var full = Path.GetFullPath(candidate);
+                if (File.Exists(full)) return full;
+            }
+            catch
+            {
+                // 忽略非法路径
+            }
+        }
+
+        // 退回内嵌资源:释放到数据目录
+        try
+        {
+            using var resource = typeof(Program).Assembly.GetManifestResourceStream("VirtualDesk.Viewer.apk");
+            if (resource is null) return null;
+
+            var target = Path.Combine(AppPaths.ResolveDataDir(), "virtualdesk-viewer.apk");
+            using (var file = File.Create(target))
+            {
+                resource.CopyTo(file);
+            }
+            Log.Info("已从内嵌资源释放 APK:" + target);
+            return target;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("释放内嵌 APK 失败:" + ex.Message);
+            return null;
+        }
+    }
+
+    private static void Fail(string message)
+    {
+        Log.Error(message);
+        Console.Error.WriteLine();
+        Console.Error.WriteLine("  ✗ " + message.Replace("\n", "\n    "));
+        Console.Error.WriteLine();
+        Environment.ExitCode = 1;
     }
 
     /// <summary>

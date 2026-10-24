@@ -51,6 +51,9 @@
     <!-- 前端嵌入包由 shell/scripts/build-web.mjs 生成 -->
     <WebBundlePath Condition="'$(WebBundlePath)' == ''">$(MSBuildProjectDirectory)\web.zip</WebBundlePath>
     <IconPath>$(MSBuildProjectDirectory)\assets\icon.ico</IconPath>
+
+    <!-- 平板端 APK 由 tools/build-apk.mjs 生成;嵌入后 exe 能自己把 App 装到平板 -->
+    <ApkPath Condition="'$(ApkPath)' == ''">$(MSBuildProjectDirectory)\..\tools\apk\virtualdesk-viewer.apk</ApkPath>
   </PropertyGroup>
 
   <ItemGroup>
@@ -60,6 +63,11 @@
 
   <ItemGroup Condition="Exists('$(WebBundlePath)')">
     <EmbeddedResource Include="$(WebBundlePath)" LogicalName="VirtualDesk.Web.zip" />
+  </ItemGroup>
+
+  <!-- 平板 APK(约 17 KiB):嵌入后不必单独分发,exe 运行时释放到数据目录再 adb install -->
+  <ItemGroup Condition="Exists('$(ApkPath)')">
+    <EmbeddedResource Include="$(ApkPath)" LogicalName="VirtualDesk.Viewer.apk" />
   </ItemGroup>
 
   <!-- ApplicationIcon 是属性,必须放 PropertyGroup;这里按条件单独设一次 -->

@@ -37,16 +37,6 @@ export default function CopyButton({
 }
 
 async function copyText(text: string): Promise<boolean> {
-  // 桌面版有主进程的剪贴板通道,比浏览器 API 更可靠
-  try {
-    if (window.virtualdeskDesktop?.copyText) {
-      const ok = await window.virtualdeskDesktop.copyText(text);
-      if (ok) return true;
-    }
-  } catch {
-    /* 继续用下面的方式 */
-  }
-
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text);

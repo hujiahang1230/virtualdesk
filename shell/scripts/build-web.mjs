@@ -154,20 +154,64 @@ function restoreApi() {
   console.log('[web] 已恢复 API 路由');
 }
 
+/**
+ * 校验:每个由 C# 宿主提供的接口,在 src/app/api 下都必须有对应路由。
+ *
+ * 前端对拿不到的接口会静默降级,所以少建一个路由在开发期看不出来 ——
+ * 比如 /api/displays 曾长期只有 C# 实现,浏览器版直接 404,副屏引导整个失效,
+ * 而两边都不报错。构建时对照一次,能在打包前把这类漂移拦下来。
+ */
+const HOST_PROVIDED_ROUTES = ['displays', 'network', 'health', 'session'];
+
+function verifyRouteParity() {
+  if (!existsSync(apiDir)) {
+    throw new Error(`找不到 ${apiDir},API 路由恢复失败`);
+  }
+  const missing = HOST_PROVIDED_ROUTES.filter((r) => !existsSync(join(apiDir, r)));
+  if (missing.length > 0) {
+    throw new Error(
+      `C# 宿主实现了这些接口,但 src/app/api 下缺少对应路由: ${missing.join(', ')}。` +
+        '\n  宿主实现见 shell/WebHost.cs 的 HandleApi;补上路由后前端才能在浏览器模式下正常工作。',
+    );
+  }
+}
+
 try {
   console.log('[web] 开始静态导出前端…');
   moveApiAside();
 
-  const build = spawnSync('npm', ['run', 'build'], {
-    cwd: projectRoot,
-    stdio: 'inherit',
-    shell: true,
-    env: { ...process.env, VD_BUILD_TARGET: 'static', VD_SKIP_LINT: '1', NEXT_TELEMETRY_DISABLED: '1' },
-  });
-  if (build.status !== 0) throw new Error('next build 失败,退出码 ' + build.status);
+  // 直接跑 next 的入口脚本,而不是 `npm run build`。
+  //
+  // 两个原因:
+  //   1. Windows 上 npm 是 npm.cmd,必须配 shell:true 才能起来,而 Node 会为此发
+  //      DEP0190 警告(参数不经转义就拼进 cmd 命令行)。
+  //   2. 绕开 npm 少一层进程,打包更快,也少一个和 PATH 有关的失败点。
+  // 执行的命令与 package.json 的 build 脚本保持一致:typegen && build。
+  const nextBin = join(projectRoot, 'node_modules', 'next', 'dist', 'bin', 'next');
+  if (!existsSync(nextBin)) {
+    throw new Error(`找不到 ${nextBin},请先执行 npm install`);
+  }
+
+  const env = {
+    ...process.env,
+    VD_BUILD_TARGET: 'static',
+    VD_SKIP_LINT: '1',
+    NEXT_TELEMETRY_DISABLED: '1',
+  };
+
+  for (const args of [['typegen'], ['build']]) {
+    const step = spawnSync(process.execPath, [nextBin, ...args], {
+      cwd: projectRoot,
+      stdio: 'inherit',
+      env,
+    });
+    if (step.status !== 0) throw new Error(`next ${args[0]} 失败,退出码 ${step.status}`);
+  }
 } finally {
   restoreApi();
 }
+
+verifyRouteParity();
 
 if (!existsSync(join(outDir, 'index.html'))) {
   throw new Error('静态导出产物不完整:找不到 out/index.html');

@@ -73,6 +73,32 @@ internal static class FirewallHelper
         $"netsh advfirewall firewall add rule name=\"{RuleName}\" dir=in action=allow " +
         $"program=\"{exePath}\" enable=yes profile=private,public";
 
+    /// <summary>
+    /// 当前活动的网络专用类型是否为「公用网络」。
+    ///
+    /// 为什么关心:放行规则是 profile=private,public —— 家用路由器一般是专用网络,
+    /// 没问题;但在咖啡馆 / 机场这类公用网络下,这条规则意味着同网段的任何人都能
+    /// 连到本程序。这里不做检测就默默生效,等于默认接受了更大的暴露面,
+    /// 所以启动时主动查一次并提醒用户。
+    /// </summary>
+    public static bool IsOnPublicNetwork()
+    {
+        try
+        {
+            var output = RunNetsh(["advfirewall", "show", "currentprofile"], elevated: false);
+            // 英文 Windows: Public / Private / DomainAuthenticated
+            // 中文 Windows: 公用 / 专用 / 域
+            return output.Contains("Public", StringComparison.OrdinalIgnoreCase)
+                || output.Contains("公用", StringComparison.Ordinal);
+        }
+        catch (Exception ex)
+        {
+            // 查不到不是错误,不值得打扰用户
+            Log.Warn("查询当前网络配置失败:" + ex.Message);
+            return false;
+        }
+    }
+
     private static string RunNetsh(string[] arguments, bool elevated)
     {
         var startInfo = new ProcessStartInfo

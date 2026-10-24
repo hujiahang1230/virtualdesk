@@ -107,6 +107,8 @@ npm run app:diagnose    # 自检:资源、数据目录、SQLite、局域网地�
 
 控制面板里的状态来自宿主自己的 `/api/status` 接口 —— 它直接读信令库,
 所以"是否在共享、配对码是多少、平板是否已连上"都是真实状态,不是猜的。
+该接口会报出当前配对码,因此**只接受本机(127.0.0.1)请求**,局域网访问会拿到 403;
+控制面板本身走的就是 loopback,不受影响。
 
 | 面板显示 | 含义 |
 | --- | --- |
@@ -269,8 +271,21 @@ Web 版保留 PostgreSQL 是因为它还要考虑多实例部署;免安装版不
 | `PUT` | `/api/session/[code]` | body 为 `{ type: "offer" \| "answer", sdp }`;写入 offer 时**清空旧 answer** |
 | `GET` | `/api/health` | 存活探测 + 存储连通性检查 |
 | `GET` | `/api/network` | 返回本机可用的局域网私有地址,供电脑端生成分享链接 |
+| `GET` | `/api/displays` | 返回显示器列表与"该共享哪一块"的建议(见下方说明) |
+| `GET` | `/api/status` | **仅免安装版、仅本机(127.0.0.1)**:控制面板专用,汇报会话阶段与活跃配对码 |
 
 约定:`offer` / `answer` 字段存的是 `JSON.stringify({ type, sdp })`,单层编码,服务器原样存取。
+
+**关于 `/api/displays`**:枚举显示器必须走操作系统 API,浏览器不提供等价能力,
+所以 Web 模式恒返回 `displays: []` + `reason: "browser-unsupported"`,页面据此提示
+"副屏引导需使用 Windows 便携版"—— 而不是误报成"只检测到 1 块屏"。
+真正实现它的是 [`shell/WebHost.cs`](virtualdesk/shell/WebHost.cs) 的 `HandleApi`
+(用 `EnumDisplayMonitors` / `EnumDisplayDevices`)。
+
+> 两套实现的路由必须一一对应。打包脚本会对照 C# 侧提供的接口清单校验
+> `src/app/api` 下是否有对应路由 —— 少建一个在开发期看不出来(前端会静默降级),
+> 但会让某个功能在浏览器模式下整个失效。清单见 `shell/scripts/build-web.mjs`
+> 的 `HOST_PROVIDED_ROUTES`。
 
 ---
 
@@ -297,10 +312,14 @@ Web 版保留 PostgreSQL 是因为它还要考虑多实例部署;免安装版不
 ### 采集参数
 
 ```ts
-{ video: { width: { ideal: 1920, max: 1920 }, height: { ideal: 1080, max: 1080 },
-          frameRate: { ideal: 60, max: 60 } },
-  audio: false }
+// src/lib/rtc.ts 的 DISPLAY_CAPTURE_CONSTRAINTS
+{ video: { frameRate: { ideal: 60, max: 60 } }, audio: false }
 ```
+
+**刻意不写 `width` / `height` 上限**:早期版本写死了 `max: 1920 / 1080`,
+遇到竖屏(1200×1920)或高分辨率的虚拟屏会被降采样,副屏场景直接失效。
+现在按显示器原生分辨率输出,由浏览器按源的实际尺寸决定,再用 §六 的方式
+核对用户有没有选错屏。采集失败时前端会依次降级:原生 @60fps → 720p30 → 浏览器默认值。
 
 ---
 
@@ -314,33 +333,46 @@ virtualdesk/
 │   ├── db-setup.mjs               建库 / 执行 SQL / 表结构自检(push、status、sql、ensure)
 │   ├── fix-esbuild.mjs            受限环境下补齐 esbuild 可执行文件(postinstall)
 │   ├── verify-api.mjs             信令接口端到端验证(27 项)
-│   └── verify-pages.mjs           页面渲染与关键内容验证
+│   ├── verify-pages.mjs           页面渲染与关键内容验证
+│   └── verify-share-target.mjs    共享目标判定的单元测试(10 项)
 ├── shell/                         免安装版宿主(.NET WinForms,当前方案)
 │   ├── Program.cs                 入口:数据目录 → 日志 → SQLite → HTTP 服务 → 窗口
 │   ├── AppPaths.cs                数据目录定位(逐个试写)、局域网地址、拉起浏览器
 │   ├── SignalStore.cs             信令存储:SQLite 单表,2 小时过期
 │   ├── WebHost.cs                 TcpListener 自实现的 HTTP 服务 + 信令接口 + 静态资源
 │   ├── StaticAssets.cs            前端资源:直接从程序集里的 zip 读,不解压到磁盘
+│   ├── DisplayInfo.cs             显示器枚举 / 虚拟显示器识别 / DPI 感知
+│   ├── FirewallHelper.cs          放行入站防火墙规则
 │   ├── MainForm.cs                状态窗口:本机/平板地址与操作按钮
+│   ├── Log.cs                     运行日志(线程安全追加)
 │   ├── launcher/launcher.cpp      原生启动器:指定 .NET 单文件解压目录
 │   ├── assets/icon.ico            应用与窗口图标
 │   └── scripts/
-│       ├── build-web.mjs          前端静态导出 → web.zip(含新代码哨兵校验)
+│       ├── build-web.mjs          前端静态导出 → web.zip(新代码哨兵 + 路由一致性校验)
 │       └── pack.mjs               完整打包:前端 → dotnet publish → 启动器 → 校验
 ├── src/
 │   ├── app/
-│   │   ├── api/session/route.ts            POST /api/session
-│   │   ├── api/session/[code]/route.ts     GET / PUT /api/session/[code]
-│   │   ├── api/health/route.ts             GET /api/health
-│   │   ├── api/network/route.ts            GET /api/network
+│   │   ├── api/
+│   │   │   ├── session/route.ts           POST /api/session
+│   │   │   ├── session/[code]/route.ts    GET / PUT /api/session/[code]
+│   │   │   ├── health/route.ts            GET /api/health
+│   │   │   ├── network/route.ts           GET /api/network
+│   │   │   └── displays/route.ts          GET /api/displays(Web 模式恒为空列表)
 │   │   ├── host/page.tsx                   电脑端
 │   │   ├── view/page.tsx                   平板端
+│   │   ├── qr/page.tsx                     扫码页
 │   │   ├── page.tsx                        首页(技术概览)
 │   │   ├── layout.tsx / globals.css / icon.svg
 │   ├── components/CopyButton.tsx
 │   ├── content/home.ts             首页全部中文文案与表格数据
 │   ├── db/{index.ts, schema.ts}    连接与表定义
-│   └── lib/{rtc.ts, session.ts, use-desktop.ts, desktop-types.ts}
+│   └── lib/
+│       ├── rtc.ts                  WebRTC 公共逻辑(两端共用)
+│       ├── session.ts              信令存取(服务端)
+│       ├── share-target.ts         共享目标判定(纯函数,可脱离浏览器测试)
+│       ├── rate-limit.ts           配对码防枚举的进程内限流
+│       ├── api.ts                  接口地址解析 + 宿主注入变量的类型声明
+│       └── vendor/qrcode-generator.js
 └── drizzle.config.ts
 ```
 
@@ -348,14 +380,14 @@ virtualdesk/
 
 ## 五、原型限制(重要)
 
-1. **浏览器只能镜像,做不了扩展屏 —— 这是当前阶段最大的限制。**
+1. **浏览器不能自己创建显示输出 —— 这是当前阶段最大的限制。**
    `getDisplayMedia()` 采集的是系统里**已存在**的显示器 / 窗口,浏览器无法创建新的显示输出。
    要"多一块屏"必须安装虚拟显示驱动(Windows **IddCx**、macOS **CGVirtualDisplay**、Linux **evdi**),
    这不是纯 Web 能绕过的限制。首页「原型限制说明」一节详细解释了这一点。
 
    **但两者的组合是可行的**:先装一个虚拟显示驱动,让 Windows 多认一块屏并扩展桌面,
    再用本应用采集**那块虚拟屏**。这正是 spacedesk / Parsec / Duet 等成熟产品的做法 ——
-   它们无一例外都带一个虚拟显示驱动。
+   它们无一例外都带一个虚拟显示驱动。§六 记录了这条路目前的完成度。
 
    ```
    虚拟显示驱动(IddCx,系统级)
@@ -373,6 +405,52 @@ virtualdesk/
 4. **跨公网需要 TURN。** 本原型只用公共 STUN,适用于同一局域网或 NAT 友好的网络;
    对称 NAT / 企业防火墙下需要部署 TURN,此时视频会经服务器中转。
 5. **信令数据 2 小时过期**,创建会话时顺带清理,不会堆积。
+
+---
+
+## 五之二、安全现状(请务必读完)
+
+这是一个**局域网内的自用工具**,但信令接口在设计上就是无鉴权的 —— 它必须能被平板直接访问。
+下面如实说明现状、已经做了什么、以及**还差什么**。
+
+### 已经落实的
+
+| 措施 | 位置 | 说明 |
+| --- | --- | --- |
+| 不发 `Access-Control-Allow-Origin: *` | `shell/WebHost.cs` | 页面与接口**同源**,这个头零收益。发了的话,用户在同一个 Wi-Fi 下访问的任意网站都能用脚本驱动这台机器的信令接口 |
+| `/api/status` 仅限本机 | `shell/WebHost.cs` | 该接口会报出**当前活跃的配对码**。控制面板走 `127.0.0.1`,不受影响;局域网访问返回 403 |
+| 配对码防枚举限流 | `src/lib/rate-limit.ts`、`shell/WebHost.cs` | 创建会话 10 次/分钟/IP,信令读写 60 次/分钟/IP |
+| 不外泄数据库错误细节 | 三个 API 路由 | 驱动的原始 `error.message` 含 host/port/dbname/user,而 `/api/health` 无鉴权。改为服务端记录 + 客户端只拿 `requestId` |
+| `/api/health` 不返回绝对路径 | 两端 | 免安装版原本返回含 Windows 用户名的 SQLite 完整路径,现只返回文件名 |
+| 连接串不再硬编码在源码里 | `src/db/index.ts`、`drizzle.config.ts` | 未配置 `DATABASE_URL` 时明确报错,而不是悄悄连上一个写死的默认库 |
+| 安全响应头 | `next.config.ts`、`shell/WebHost.cs` | `X-Content-Type-Options` / `X-Frame-Options` / `Referrer-Policy` |
+| 公用网络告警 | `shell/FirewallHelper.cs`、`Program.cs` | 放行规则是 `profile=private,public`;在咖啡馆/机场这类公用网络下主动提示一次 |
+
+> 响应头刻意**不发** `Permissions-Policy` 的 `display-capture` 指令 ——
+> 它正是 `getDisplayMedia` 的门禁,配错会直接让核心功能失效。浏览器默认值已是 `self`。
+
+### 仍然存在的风险(有意接受的取舍)
+
+1. **配对码仍是唯一凭据,而且没有所有权绑定。**
+   任何知道码的设备都能读走 host 的 offer SDP、并 `PUT` 覆盖 answer。
+   码空间只有 100 万,限流把穷举速度压到了可接受,但**挡不住分布式枚举**。
+
+2. **限流是进程内的 best-effort**:重启即清零;多实例部署时各算各的;
+   按 IP 计数,NAT 后面多人共用一个出口会被一起限。
+   要根治需要在 `signal_sessions` 上记录失败次数并锁死会话 —— 需要改两套存储的 schema,尚未做。
+
+3. **信令与媒体都是明文 HTTP。** 这是 `getDisplayMedia` 的硬约束 ——
+   它只在**安全上下文**(HTTPS 或 localhost)里可用,而局域网服务无法自签证书。
+   好在媒体流本身是 DTLS-SRTP(WebRTC 强制),视频内容不经过明文信道;
+   但 SDP 会在网络上明文传递,其中包含 ICE 候选(内网 IP)。
+
+4. **SDP 原文在存储里保留 2 小时**(Postgres / SQLite 均为明文)。这是设计如此,
+   目的是不保存任何画面数据。
+
+### 建议的使用方式
+
+在**可信网络**(家里 / 办公室)下使用,用完关闭程序。
+公用网络下程序会弹窗提示,风险自负。
 
 ---
 
@@ -425,6 +503,11 @@ virtualdesk/
 | 告诉用户选哪块 | `/api/displays` 返回列表并给出推荐项;控制面板与共享页都会显示 |
 | 采集后核对 | 用 `track.getSettings()` 的分辨率与 `displaySurface` 判断是否选错屏;若主屏与虚拟屏分辨率相同则给出"无法自动判断"的软提示,不误报 |
 
+> **这一整节只在 Windows 便携版成立。** 枚举显示器必须走操作系统 API,
+> 浏览器不提供等价能力,所以 Web 模式的 `/api/displays` 恒返回空列表,
+> 页面会明确提示"副屏引导需使用 Windows 便携版",而不是让你以为系统里只有一块屏。
+> 详见 [§二 · 接口](#接口) 与 `src/app/api/displays/route.ts`。
+
 DPI 这一项容易踩坑:进程若"DPI 不感知",125% 缩放下 1920×1080 会被读成 1536×864,
 和浏览器报告的物理像素对不上,核对就会误报。`DisplayInfo.EnsureDpiAwareness()` 在启动最早期
 声明 Per-Monitor-V2 解决了这一点。
@@ -432,15 +515,67 @@ DPI 这一项容易踩坑:进程若"DPI 不感知",125% 缩放下 1920×1080 会
 采集侧也已配合:不再写死 `max: 1920×1080`,而是**按显示器原生分辨率**输出,
 因此 2560×1440 或竖屏 1200×1920 都会原样透传。
 
-### 6.5 还没做的
+### 6.5 原生推流:不用浏览器(实验)
+
+浏览器方案能用,但要求每次手动点「共享」、在系统弹窗里挑屏,平板那边也得开浏览器。
+`--stream` 模式去掉了浏览器:**进程内驱动 ffmpeg 直接抓虚拟屏并推流**。
+
+```powershell
+# 自动挑本机地址(优先 USB 直连链路),30fps / 6Mbps
+第二块屏.exe --stream
+
+# 指定地址与参数
+第二块屏.exe --stream 192.168.28.233 5000 30 6M
+```
+
+平板端用 **VLC**(不是浏览器):「网络」→「流」→ 输入 `tcp://<电脑IP>:5000`,
+并把网络缓存调到 100~200ms。
+
+#### 技术选型与实测依据
+
+这一节的每个选择都来自实测,不是照抄:
+
+| 问题 | 结论 | 依据 |
+| --- | --- | --- |
+| 能不能用 DXGI Desktop Duplication 抓虚拟屏 | **不能** | `ddagrab=output_idx=1` 报 `Failed to enumerate DXGI output 1`。虚拟屏由 IddCx 间接显示驱动提供,不在同一块适配器上,也不是可复制的 DXGI output |
+| GDI 能不能抓虚拟屏 | **能** | `gdigrab` 按桌面区域截图,实测抓到真实桌面内容(与主屏截图的 PSNR 仅 4.7 dB,证明是不同区域) |
+| 1080p60 能不能跑满 | **不能** | GDI 路径实测 1080p 最高 41~45 fps,占用 2.6~2.7 个 CPU 核 |
+| 1080p30 能不能跑满 | **能** | 实测 29 fps 准时达标,只占 **1.0 个核** |
+| 硬件编码 | `h264_nvenc` 不可用 → 回退 `h264_mf` | 本机驱动 NVENC API 12.1 < ffmpeg 要求的 13.0。`h264_mf`(Media Foundation)可用 |
+| UDP 还是 TCP | **TCP** | 本机 UDP 收发不通(连 `testsrc` 都收不到),TCP 一次通过。USB 直连是点对点可靠链路,TCP 不会丢包花屏 |
+
+`--stream` 因此按 **30fps** 设计。对副屏看文档/写代码足够;要 60fps 必须改用
+**Windows.Graphics.Capture**(全程 GPU,不做 CPU 拷贝),那是后续工作。
+
+#### 已实现的健壮性
+
+- **编码器自动探测**:先各试一帧,`h264_nvenc` → `h264_mf` → `libx264` 取第一个能用的。
+  否则只会在推流启动瞬间报 `Driver does not support the required nvenc API version`。
+- **断线自动重连**:ffmpeg 在客户端断开后以 `-10053` 退出,守护循环会自动重起,
+  平板随时可以重新连接,不用回电脑重启程序。
+- **标准输入判定**:`Console.ReadLine()` 在输入被重定向时立即返回 `null`,会导致程序秒退。
+  现在只在交互式终端里等回车。
+
+#### 已验证的输出
+
+```
+收到 1933 KiB   avg_frame_rate=30/1   duration=15.000000
+codec_name=h264  width=1920  height=1080
+捕获区域 1920×1080 @(1920,0)   编码器 h264_mf   监听 tcp://0.0.0.0:5000
+```
+
+打包后的 `第二块屏.exe --stream` 同样验证通过(启动器会转发参数)。
+
+### 6.6 还没做的
 
 - **输入回传**(平板点按 → 电脑鼠标)。浏览器不能注入系统输入,需要一个原生程序调用
   `SendInput` 并把坐标映射到虚拟屏。没有这一步,副屏只能看、不能点。
-- **竖竖屏与旋转**:平板竖着用时,虚拟屏也要设成竖屏,两者需配合;暂无自动同步。
-- **分辨率记忆**:目前每次共享都要在系统选择器里手动挑屏。浏览器不提供"记住上次选择"
-  的 API,`getDisplayMedia` 每次都弹选择器。
-- **零外部依赖**:若要脱离第三方驱动、做成"装一个 exe 就有副屏",需要自研 IddCx 驱动
-  (用户模式驱动 + 自签名或 EV 证书签名),工作量远大于当前形态。
+- **60fps**:需要 Windows.Graphics.Capture 的 D3D11 互操作,当前 GDI 路径封顶 45fps。
+- **平板端 App**:现在靠 VLC 播放,不是自研客户端。要做低延迟(30~50ms)需要一个
+  MediaCodec 解码的 Android App,那需要 Android SDK。
+- **竖屏与旋转**:平板竖着用时,虚拟屏也要设成竖屏,两者需配合;暂无自动同步。
+- **零外部依赖**:`--stream` 依赖 ffmpeg.exe。要彻底摆脱,需自研 IddCx 驱动 + 进程内
+  Media Foundation 编码。
 
 ---
 

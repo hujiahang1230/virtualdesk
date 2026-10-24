@@ -174,18 +174,42 @@ internal sealed class WebHost : IDisposable
                 client.NoDelay = true;
                 using var stream = client.GetStream();
 
+                // 限流与 /api/status 的本机校验都要用,先取一次
+                var remote = client.Client.RemoteEndPoint as IPEndPoint;
+                var remoteIp = remote?.Address ?? IPAddress.None;
+                var isLoopback = IPAddress.IsLoopback(remoteIp);
+
                 // 一个连接处理一个请求:前端的 fetch 是短连接
                 var request = ReadRequest(stream);
                 if (request is null) return;
 
                 var path = request.Path.TrimEnd('/');
                 if (path.Length == 0) path = "/";
-                Log.Info($"{request.Method} {request.Path}");
+                Log.Info($"{request.Method} {request.Path} from {remoteIp}{(isLoopback ? " (本机)" : "")}");
 
                 // 路由分流:/api/ 走接口,其余走静态资源
-                var response = path.StartsWith("/api/", StringComparison.Ordinal)
-                    ? HandleApi(request, path)
-                    : HandleStatic(path);
+                HttpResponse response;
+                if (path.StartsWith("/api/", StringComparison.Ordinal))
+                {
+                    // 防暴力枚举:配对码只有 6 位数字(100 万种),不限速就能被脚本穷举。
+                    // 阈值按"正常轮询 + 20% 余量"算,见 RateLimiter。
+                    if (!RateLimiter.Allow(remoteIp, path, request.Method))
+                    {
+                        Log.Warn($"限流拦截:{request.Method} {path} from {remoteIp}");
+                        response = Json(429, new JsonObject
+                        {
+                            ["error"] = "请求过于频繁,请稍后再试。",
+                        });
+                    }
+                    else
+                    {
+                        response = HandleApi(request, path, isLoopback);
+                    }
+                }
+                else
+                {
+                    response = HandleStatic(path);
+                }
 
                 WriteResponse(stream, response);
             }
@@ -282,8 +306,13 @@ internal sealed class WebHost : IDisposable
         header.Append("Cache-Control: ")
             .Append(response.NoCache ? "no-cache" : "public, max-age=31536000, immutable")
             .Append("\r\n");
-        // 允许页面从任意地址访问接口(平板与电脑不同源时也能用)
-        header.Append("Access-Control-Allow-Origin: *\r\n");
+        // 页面与接口同源(端口也一致),所以这里不需要任何跨域放行。
+        //
+        // 刻意**不**发 Access-Control-Allow-Origin: * —— 发了的话,用户在同一个
+        // Wi-Fi 下访问的任意网站都能用脚本驱动这台机器上的信令接口
+        // (读走 offer / 覆盖 answer)。平板和电脑始终同源,不跨域。
+        header.Append("X-Content-Type-Options: nosniff\r\n");
+        header.Append("X-Frame-Options: SAMEORIGIN\r\n");
         header.Append("Connection: close\r\n");
         header.Append("\r\n");
 
@@ -297,16 +326,19 @@ internal sealed class WebHost : IDisposable
         200 => "OK",
         201 => "Created",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         413 => "Payload Too Large",
+        429 => "Too Many Requests",
         500 => "Internal Server Error",
         503 => "Service Unavailable",
-        _ => "OK",
+        // 未知状态码不能回 "OK":那会产生一条语义错误的 状态码/原因 不匹配的状态行。
+        _ => "Internal Server Error",
     };
 
     // ---------------------------------------------------------------- 接口
 
-    private HttpResponse HandleApi(HttpRequest request, string path)
+    private HttpResponse HandleApi(HttpRequest request, string path, bool isLoopback)
     {
         if (path == "/api/health" && request.Method == "GET")
         {
@@ -317,7 +349,9 @@ internal sealed class WebHost : IDisposable
                 ["database"] = new JsonObject
                 {
                     ["reachable"] = true,
-                    ["target"] = _store.DatabasePath,
+                    // 只给文件名,不给绝对路径:这个接口在局域网里没有鉴权,
+                    // 而绝对路径会带出 Windows 用户名。
+                    ["target"] = Path.GetFileName(_store.DatabasePath),
                 },
                 ["time"] = DateTimeOffset.UtcNow.ToString("o"),
             });
@@ -385,6 +419,18 @@ internal sealed class WebHost : IDisposable
         // 控制面板用:汇报当前会话状态,让主窗口不用再开界面就能显示进度
         if (path == "/api/status" && request.Method == "GET")
         {
+            // 这个接口会报出**当前活跃的配对码**,只允许本机读取。
+            // 控制面板(MainForm)走的是 http://127.0.0.1:{port},不受影响;
+            // 而放在局域网里裸奔的话,同一网络下任何设备都能直接读走配对码,
+            // 6 位码本来就只有 100 万种,读到就不用猜了。
+            if (!isLoopback)
+            {
+                return Json(403, new JsonObject
+                {
+                    ["error"] = "该接口仅限本机访问。",
+                });
+            }
+
             var latest = _store.LatestActive();
             var sharing = latest?.Offer is not null;
             var connected = latest?.Answer is not null;
@@ -688,5 +734,91 @@ internal sealed class WebHost : IDisposable
         }
         _listeners.Clear();
         _shutdown.Dispose();
+    }
+}
+
+/// <summary>
+/// 按来源 IP 的滑动窗口限流,用来防止配对码被暴力枚举。
+///
+/// 背景:配对码是 6 位数字,总共 100 万种,而且**没有任何鉴权** ——
+/// 任何知道码的设备都能读走 offer、覆盖 answer。不限速的话,一个脚本几分钟就能
+/// 把整个空间扫一遍。这里给信令接口加一层进程内的速率上限。
+///
+/// 阈值是按"正常使用的峰值 + 余量"定的,别随手调小,否则会误伤平板端的正常轮询:
+///   - 平板轮询 offer:POLL_INTERVAL_MS = 1200ms → 约 50 次/分钟,留到 60
+///   - 电脑端等 answer:同样的节奏
+///   - 创建会话:人一次,10 次/分钟足够
+///
+/// 已知局限(有意接受,记录在 README 的安全章节里):
+///   - 进程内状态,重启即清零
+///   - 按 IP 计数,NAT 后面多人共用一个出口会被一起限
+///   - 挡不住分布式枚举;要根治需要 schema 层记录失败次数
+/// </summary>
+internal static class RateLimiter
+{
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Counter> Counters = new();
+
+    private sealed class Counter
+    {
+        public int Hits;
+        public long WindowStart = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+    }
+
+    /// <summary>创建会话(POST /api/session):每个 IP 每分钟 10 次</summary>
+    private const int CreateLimit = 10;
+
+    /// <summary>信令读写(GET|PUT /api/session/[code]):每个 IP 每分钟 60 次</summary>
+    private const int SignalingLimit = 60;
+
+    private const long WindowMs = 60_000;
+
+    /// <summary>
+    /// 判断这次请求是否放行。
+    /// </summary>
+    /// <param name="ip">来源地址</param>
+    /// <param name="path">请求路径,用来区分"创建会话"与"轮询信令"</param>
+    /// <param name="method">请求方法</param>
+    public static bool Allow(IPAddress ip, string path, string method)
+    {
+        // 只对会消耗配对码空间的接口限流。health/displays/network 是幂等的只读接口,
+        // 限它们没有收益,只会让正常页面变脆。
+        var limit = path switch
+        {
+            "/api/session" => method == "POST" ? CreateLimit : SignalingLimit,
+            _ when path.StartsWith("/api/session/", StringComparison.Ordinal) => SignalingLimit,
+            _ => int.MaxValue,
+        };
+        if (limit == int.MaxValue) return true;
+
+        var key = $"{ip}|{(limit == CreateLimit ? "create" : "signal")}";
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+        var counter = Counters.GetOrAdd(key, _ => new Counter());
+        lock (counter)
+        {
+            // 窗口过期就先归零。注意这里顺带做一次惰性清理:长时间没有新 IP 进来时,
+            // 字典不会无限增长。
+            if (now - counter.WindowStart >= WindowMs)
+            {
+                counter.WindowStart = now;
+                counter.Hits = 0;
+            }
+
+            if (counter.Hits >= limit) return false;
+            counter.Hits += 1;
+        }
+
+        Sweep(now);
+        return true;
+    }
+
+    /// <summary>丢掉 10 分钟没有活动的计数器,防止字典被大量一次性 IP 撑大</summary>
+    private static void Sweep(long now)
+    {
+        if (Counters.Count < 256) return;
+        foreach (var (key, value) in Counters)
+        {
+            if (now - value.WindowStart > WindowMs * 10) Counters.TryRemove(key, out _);
+        }
     }
 }

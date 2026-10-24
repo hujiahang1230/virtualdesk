@@ -24,7 +24,25 @@ const nextConfig: NextConfig = {
         // 静态导出不支持 Next 的图片优化服务
         images: { unoptimized: true },
       }
-    : {}),
+    : {
+        // 静态导出(output: 'export')不经过 Next 的 Node 服务,headers() 不生效,
+        // 那边由 C# 宿主自己发(见 shell/WebHost.cs 的 WriteResponse)。
+        async headers() {
+          return [
+            {
+              source: '/:path*',
+              headers: [
+                { key: 'X-Content-Type-Options', value: 'nosniff' },
+                { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+                { key: 'Referrer-Policy', value: 'no-referrer' },
+                // 刻意**不发** Permissions-Policy 的 display-capture 指令:
+                // 它正是 getDisplayMedia 的门禁,写错会直接让核心功能失效。
+                // 浏览器默认值已经是 self,省略即可。
+              ],
+            },
+          ];
+        },
+      }),
 
   eslint: {
     // 桌面打包时跳过 ESLint(npm run lint 单独跑),缩短打包时间

@@ -4,13 +4,12 @@ import Link from 'next/link';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import CopyButton from '@/components/CopyButton';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, isHostedByApp } from '@/lib/api';
 import {
   checkShareTarget,
   type DisplayListResponse,
   type ShareTargetCheck,
 } from '@/lib/share-target';
-import { useDesktop } from '@/lib/use-desktop';
 import {
   ANSWER_WAIT_TIMEOUT_MS,
   DISPLAY_CAPTURE_CONSTRAINTS,
@@ -48,6 +47,11 @@ interface SessionResponse {
 interface NetworkResponse {
   candidates: { address: string; label: string }[];
   primary: string | null;
+  /**
+   * 宿主实际监听的局域网地址(C# 宿主提供;Next 模式下没有这个字段)。
+   * 端口由宿主挑选,前端不能假设是 3000,所以优先用它。
+   */
+  listeningUrls?: string[];
 }
 
 const STATUS_TEXT: Record<HostStatus, string> = {
@@ -90,28 +94,30 @@ export default function HostPage() {
   const [candidateCount, setCandidateCount] = useState<number | null>(null);
   const [supportWarning, setSupportWarning] = useState<string | null>(null);
   const [lanIp, setLanIp] = useState<string | null>(null);
+  /** 宿主实际监听的局域网地址(只有 C# 宿主会给) */
+  const [listeningUrls, setListeningUrls] = useState<string[]>([]);
 
   /** 系统里的显示器列表。副屏场景要靠它判断"该共享哪一块"。 */
   const [displayList, setDisplayList] = useState<DisplayListResponse | null>(null);
   /** 采集后对"是否选错屏"的判定结果 */
   const [shareCheck, setShareCheck] = useState<ShareTargetCheck>(null);
 
-  // 桌面版(.exe)外壳的状态;浏览器里为 null,页面照旧走 Web 逻辑
-  const desktop = useDesktop();
+  /** 是否由单文件 exe 托管(影响局域网地址来源的提示文案) */
+  const [hostedByApp, setHostedByApp] = useState(false);
 
   /**
-   * 是否运行在桌面壳(WebView2)里。
+   * 当前浏览器是否**不支持屏幕采集**。
    *
-   * 关键:WebView2 内嵌内核不提供 navigator.mediaDevices,
-   * 也就是说在桌面壳内部**无法调用 getDisplayMedia 采集屏幕**。
-   * 所以桌面壳里不能直接显示"开始共享",而要引导用户用系统浏览器打开本页。
+   * 判据是 navigator.mediaDevices.getDisplayMedia 不存在 —— 这同时覆盖了
+   * 桌面壳内嵌内核、老 Safari、以及被企业策略禁用的浏览器。
+   *
+   * 不支持时不能显示"开始共享":点了必然失败,不如直接引导到别的浏览器。
    */
-  const [inDesktopShell, setInDesktopShell] = useState(false);
+  const [captureUnsupported, setCaptureUnsupported] = useState(false);
 
   useEffect(() => {
-    // 桌面壳里 navigator.mediaDevices 直接不存在,这是最可靠的判据
-    const noCaptureApi = typeof navigator.mediaDevices?.getDisplayMedia !== 'function';
-    setInDesktopShell(noCaptureApi || Boolean(window.virtualdeskDesktop));
+    setCaptureUnsupported(typeof navigator.mediaDevices?.getDisplayMedia !== 'function');
+    setHostedByApp(isHostedByApp());
   }, []);
 
   useEffect(() => {
@@ -128,7 +134,9 @@ export default function HostPage() {
     apiFetch('/api/network')
       .then((res) => (res.ok ? (res.json() as Promise<NetworkResponse>) : null))
       .then((data) => {
-        if (!cancelled && data?.primary) setLanIp(data.primary);
+        if (cancelled || !data) return;
+        if (data.primary) setLanIp(data.primary);
+        if (data.listeningUrls?.length) setListeningUrls(data.listeningUrls);
       })
       .catch(() => {
         /* 拿不到局域网地址也不影响主流程 */
@@ -147,7 +155,7 @@ export default function HostPage() {
         if (!cancelled && data) setDisplayList(data);
       })
       .catch(() => {
-        /* 老版本宿主没有这个接口,忽略 */
+        /* 拿不到就按"未知"处理,不阻塞共享流程 */
       });
     return () => {
       cancelled = true;
@@ -481,23 +489,22 @@ export default function HostPage() {
       return { shareUrl: null, lanUrl: null, lanLabel: null };
     }
 
-    // 桌面版:主进程已经算出"平板该用哪个地址",直接用它拼配对码
-    if (desktop?.lanUrl) {
-      const base = desktop.lanUrl.split('?')[0];
-      return {
-        shareUrl: `${window.location.origin}/view?code=${code}`,
-        lanUrl: `${base}?code=${code}`,
-        lanLabel: desktop.lanCandidates[0]?.address ?? null,
-      };
+    const shareUrl = `${window.location.origin}/view?code=${code}`;
+
+    // 宿主已经算出"平板该用哪个地址"(C# 宿主挑端口、挑网卡都比前端准),直接用它
+    const hostedBase = listeningUrls[0]?.replace(/\/$/, '');
+    if (hostedBase) {
+      return { shareUrl, lanUrl: `${hostedBase}/view?code=${code}`, lanLabel: lanIp };
     }
 
+    // Next 模式:接口与页面同源,端口就是当前页面的端口
     const port = window.location.port || '3000';
     return {
-      shareUrl: `${window.location.origin}/view?code=${code}`,
+      shareUrl,
       lanUrl: lanIp ? `http://${lanIp}:${port}/view?code=${code}` : null,
       lanLabel: lanIp,
     };
-  }, [code, lanIp, desktop]);
+  }, [code, lanIp, listeningUrls]);
 
   const isBusy = status === 'capturing' || status === 'waiting' || status === 'answering';
   const isLive = status === 'connected';
@@ -516,15 +523,9 @@ export default function HostPage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  /** 在系统浏览器里打开共享页(桌面壳内无法采集屏幕,只能这么办) */
+  /** 在别的浏览器标签里打开共享页(当前浏览器不支持采集时的出路) */
   const openInSystemBrowser = useCallback(() => {
-    const url = `${window.location.origin}/host`;
-    // 桌面壳提供了走系统默认浏览器打开的通道
-    if (window.virtualdeskDesktop?.openExternal) {
-      void window.virtualdeskDesktop.openExternal(url);
-      return;
-    }
-    window.open(url, '_blank', 'noopener');
+    window.open(`${window.location.origin}/host`, '_blank', 'noopener');
   }, []);
 
   return (
@@ -551,9 +552,9 @@ export default function HostPage() {
           <div>
             <p className="text-sm font-semibold text-slate-100">电脑端 · 共享这一台电脑的屏幕</p>
             <p className="text-xs text-slate-500">
-              {desktop
-                ? `桌面版 · 内置数据库已就绪${desktop.version ? ` · v${desktop.version}` : ''}`
-                : '采集 1080p60 · 码率上限 8 Mbps · 视频点对点直传'}
+              {hostedByApp
+                ? '桌面版 · 内置数据库已就绪'
+                : '按显示器原生分辨率采集 · 码率上限 8 Mbps · 视频点对点直传'}
             </p>
           </div>
         </div>
@@ -573,34 +574,38 @@ export default function HostPage() {
         </div>
       ) : null}
 
-      {/* ---------- 桌面壳内的引导:内嵌内核无法采集屏幕,必须换到系统浏览器 ---------- */}
-      {inDesktopShell ? (
+      {/* ---------- 当前浏览器不支持屏幕采集时的引导 ---------- */}
+      {captureUnsupported ? (
         <section className="vd-card mb-5 p-5 sm:p-6">
           <h2 className="flex items-center gap-2 text-base font-semibold text-amber-200">
             <span aria-hidden>⚠️</span>
-            需要在本机浏览器里开始共享
+            当前浏览器无法采集屏幕
           </h2>
           <p className="mt-2 text-sm leading-relaxed text-slate-300">
-            当前窗口是桌面壳的内嵌浏览器(WebView2)。为了保证安全,它的内核
+            这个浏览器
             <span className="text-amber-200">没有提供屏幕采集接口</span>
-            (<span className="font-mono text-xs">navigator.mediaDevices</span> 不存在),
-            所以在这里点“开始共享”一定会失败。
+            (<span className="font-mono text-xs">navigator.mediaDevices.getDisplayMedia</span> 不存在),
+            所以在这里点「开始共享」一定会失败。
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-slate-400">
+            常见原因:桌面壳的内嵌内核(出于安全不提供该接口)、浏览器版本过旧、
+            或浏览器被安全策略禁用了屏幕共享。
           </p>
           <p className="mt-2 text-sm leading-relaxed text-slate-400">
             共享本身仍然是<strong className="text-slate-300">本机对平板</strong>的点对点传输,和浏览器无关 ——
-            只是“采集哪块屏幕”这个动作必须由真正的浏览器来做。
+            只是「采集哪块屏幕」这个动作必须由支持该接口的浏览器来做。
           </p>
 
           <div className="mt-4 flex flex-wrap gap-3">
             <button type="button" className="vd-btn vd-btn-primary" onClick={openInSystemBrowser}>
-              🌐 用系统浏览器打开共享页
+              🌐 换个浏览器打开共享页
             </button>
             <button
               type="button"
               className="vd-btn"
-              onClick={() => window.virtualdeskDesktop?.openExternal(`${window.location.origin}/view`)}
+              onClick={() => window.open(`${window.location.origin}/view`, '_blank', 'noopener')}
             >
-              📱 用系统浏览器打开接收页
+              📱 在新标签打开接收页
             </button>
           </div>
 
@@ -608,12 +613,13 @@ export default function HostPage() {
             {typeof window !== 'undefined' ? `${window.location.origin}/host` : '/host'}
           </p>
           <p className="mt-2 text-xs text-slate-500">
-            在这个地址上打开共享页即可;配对码会自动显示,平板用局域网链接接入。
+            在支持屏幕采集的浏览器(Chrome / Edge / Safari 15+)里打开上面这个地址即可;
+            配对码会自动显示,平板用局域网链接接入。
           </p>
         </section>
       ) : null}
 
-      <div className={`grid gap-5 lg:grid-cols-[1.35fr_1fr] ${inDesktopShell ? 'hidden' : ''}`}>
+      <div className={`grid gap-5 lg:grid-cols-[1.35fr_1fr] ${captureUnsupported ? 'hidden' : ''}`}>
         {/* ---------- 左侧:本地预览 ---------- */}
         <section className="vd-card p-4 sm:p-5">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -673,6 +679,21 @@ export default function HostPage() {
                       </li>
                     ))}
                   </ul>
+                </>
+              ) : displayList.reason === 'browser-unsupported' ? (
+                <>
+                  <p className="flex items-center gap-2 font-semibold text-slate-300">
+                    <span>ℹ</span>
+                    浏览器模式无法枚举显示器
+                  </p>
+                  <p className="mt-2 leading-relaxed text-slate-400">
+                    「该选哪一块屏」的辅助判断依赖读取系统显示器列表,而浏览器出于安全限制不提供这个能力。
+                    共享本身不受影响,只是选错屏时不会有提示。
+                  </p>
+                  <p className="mt-2 leading-relaxed text-slate-400">
+                    需要副屏引导请使用
+                    <strong className="text-slate-300"> Windows 便携版</strong>(它会读取真实显示器列表)。
+                  </p>
                 </>
               ) : (
                 <>
@@ -777,12 +798,9 @@ export default function HostPage() {
                       <button
                         type="button"
                         className="vd-btn"
-                        onClick={() => {
-                          if (desktop) void window.virtualdeskDesktop?.openExternal(lanUrl);
-                          else window.open(lanUrl, '_blank', 'noopener');
-                        }}
+                        onClick={() => window.open(lanUrl, '_blank', 'noopener')}
                       >
-                        {desktop ? '用系统浏览器打开' : '在新标签页打开'}
+                        在新标签页打开
                       </button>
                     </div>
                   </div>
@@ -791,12 +809,16 @@ export default function HostPage() {
                 {shareUrl ? (
                   <div className="vd-panel p-3">
                     <p className="text-xs text-slate-500">
-                      {desktop ? '本机地址(桌面版内部使用,平板访问不到)' : '当前地址'}
+                      {hostedByApp ? '本机地址(桌面版内部使用,平板访问不到)' : '当前地址'}
                     </p>
                     <p className="mt-1 break-all font-mono text-xs text-slate-400">{shareUrl}</p>
                     <div className="mt-2 flex flex-wrap gap-2">
                       <CopyButton value={shareUrl} label="复制本机链接" />
-                      <Link href={`/view?code=${code}`} className="vd-btn" target={desktop ? '_blank' : undefined}>
+                      <Link
+                        href={`/view?code=${code}`}
+                        className="vd-btn"
+                        target={hostedByApp ? '_blank' : undefined}
+                      >
                         在本机打开平板端
                       </Link>
                     </div>
@@ -805,9 +827,12 @@ export default function HostPage() {
 
                 {!lanUrl ? (
                   <p className="text-xs leading-relaxed text-amber-300/80">
-                    没有探测到局域网地址,平板暂时连不上。请确认电脑已连上 Wi-Fi 或网线;若是浏览器版,还需要用电脑的局域网
-                    IP 重新打开本页(例如
-                    <span className="font-mono"> http://192.168.1.10:3000/host</span>)。桌面版会自动处理这一步。
+                    没有探测到局域网地址,平板暂时连不上。请确认电脑已连上 Wi-Fi 或网线。
+                    {hostedByApp
+                      ? '如果换了网卡或 VPN 状态有变,重启桌面版让它重新挑一次地址。'
+                      : '若是浏览器版,还需要用电脑的局域网 IP 重新打开本页(例如'
+                      + <span className="font-mono"> http://192.168.1.10:3000/host</span>
+                      + ')。'}
                   </p>
                 ) : null}
               </div>
@@ -902,7 +927,7 @@ function describeCaptureError(caught: unknown): string {
         return `没有选中任何可共享的屏幕或窗口。(${detail})`;
       case 'NotReadableError':
         return (
-          '系统无法读取画面。常见原因:桌面壳没有拿到屏幕采集授权、被安全软件或远程桌面占用,或采集源选择器没有返回结果。' +
+          '系统无法读取画面。常见原因:被安全软件或远程桌面占用、显卡驱动异常,或采集源选择器没有返回结果。' +
           `(${detail})`
         );
       case 'AbortError':

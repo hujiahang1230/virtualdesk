@@ -18,16 +18,27 @@
 const API_BASE_FLAG = '__VIRTUALDESK_API_BASE__';
 const HOST_FLAG = '__VIRTUALDESK_HOST__';
 
+declare global {
+  interface Window {
+    /**
+     * 由 C# 宿主在返回 HTML 时注入 —— 接口所在的绝对地址(宿主挂在随机端口上)
+     */
+    __VIRTUALDESK_API_BASE__?: string;
+    /** 值为 'desktop' 表示由单文件 exe 托管 */
+    __VIRTUALDESK_HOST__?: string;
+  }
+}
+
 function readInjectedBase(): string | null {
   if (typeof window === 'undefined') return null;
-  const injected = (window as unknown as Record<string, unknown>)[API_BASE_FLAG];
+  const injected = window[API_BASE_FLAG];
   return typeof injected === 'string' && injected.length > 0 ? injected : null;
 }
 
 /** 是否由 C# 宿主托管 */
 export function isHostedByApp(): boolean {
   if (typeof window === 'undefined') return false;
-  return (window as unknown as Record<string, unknown>)[HOST_FLAG] === 'desktop';
+  return window[HOST_FLAG] === 'desktop';
 }
 
 /**

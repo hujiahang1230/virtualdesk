@@ -121,6 +121,7 @@ internal static class AppPaths
         foreach (var ni in ActiveInterfaces())
         {
             var isVirtual = IsVirtualAdapter(ni);
+            var isUsb = IsUsbTethering(ni);
             var isWireless = ni.NetworkInterfaceType ==
                              System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211;
 
@@ -139,9 +140,12 @@ internal static class AppPaths
                 else if (a == 172 && b >= 16 && b <= 31) rangeScore = 80;
                 if (rangeScore == 0) continue;
 
-                var typeBonus = isVirtual ? -200 : isWireless ? 100 : 90;
+                // USB 直连优先级最高:这是一条点对点专用链路,带宽与延迟都比 Wi-Fi 稳得多,
+                // 也不受 AP 隔离、防火墙分组、多网卡选错的影响。
+                var typeBonus = isVirtual ? -200 : isUsb ? 250 : isWireless ? 100 : 90;
+                var label = isUsb ? ni.Name + " · USB 直连" : ni.Name;
 
-                candidates.Add((info.Address.ToString(), ni.Name, rangeScore + typeBonus));
+                candidates.Add((info.Address.ToString(), label, rangeScore + typeBonus));
             }
         }
 
@@ -164,6 +168,37 @@ internal static class AppPaths
             yield return ni;
         }
     }
+
+    /// <summary>
+    /// 判断这块网卡是不是「USB 网络共享」链路(Android/iOS 用数据线插上后开启共享时出现)。
+    ///
+    /// 为什么要单独识别:这是 PC 与平板之间**唯一的点对点直连**,不经过路由器、不受 Wi-Fi
+    /// 拥塞与 AP 隔离影响,插上线即用。把它排在最前面,用户就不必再纠结"该填哪个 IP"。
+    ///
+    /// 常见名字:Remote NDIS based Internet Sharing Device、RNDIS、USB 以太网、
+    /// "以太网 2"(Windows 对 RNDIS 的默认命名)。
+    /// </summary>
+    private static bool IsUsbTethering(System.Net.NetworkInformation.NetworkInterface ni)
+    {
+        var text = (ni.Name + " " + ni.Description).ToLowerInvariant();
+
+        string[] keywords =
+        [
+            "rndis", "remote ndis", "usb 以太网", "usb ethernet", "usb tethering",
+            "android usb", "apple mobile device ethernet", "iphone usb",
+        ];
+
+        foreach (var keyword in keywords)
+        {
+            if (text.Contains(keyword, StringComparison.Ordinal)) return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>当前是否存在 USB 直连链路(用于界面提示)</summary>
+    public static bool HasUsbTethering() =>
+        ActiveInterfaces().Any(IsUsbTethering);
 
     /// <summary>
     /// 确保临时目录可写。

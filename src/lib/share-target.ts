@@ -24,6 +24,12 @@ export interface DisplayListResponse {
   canExtend: boolean;
   recommendedIndex: number | null;
   recommendedSize: string | null;
+  /**
+   * 为空表示显示器列表是可信的;"browser-unsupported" 表示当前运行时根本查不到
+   * 显示器(Web 模式,见 src/app/api/displays/route.ts)。两者必须分开提示,
+   * 否则会把"查不到"说成"只检测到 1 块屏"。
+   */
+  reason?: 'browser-unsupported';
 }
 
 /** 对"这一次共享的目标对不对"的判定结果 */

@@ -39,6 +39,16 @@ internal static class Program
             return;
         }
 
+        // --stream:原生推流(不走浏览器)。把虚拟显示器编码成 H.264 推到平板。
+        //   --stream              自动猜平板地址(USB 链路的网关)
+        //   --stream 127.0.0.1    指定地址,便于本机自测
+        var streamIndex = Array.IndexOf(args, "--stream");
+        if (streamIndex >= 0)
+        {
+            RunStream(args, streamIndex);
+            return;
+        }
+
         var dataDir = string.Empty;
         try
         {
@@ -70,6 +80,23 @@ internal static class Program
             using var host = new WebHost(assets, store);
             host.Start();
 
+            // 放行规则是 profile=private,public。在公用网络(咖啡馆/机场)下,
+            // 同一个 Wi-Fi 的任何设备都能连到本程序,所以主动提醒一次。
+            // 只提醒、不阻断:连不上平板的代价比多暴露一个端口更大。
+            if (host.LanUrl is not null && FirewallHelper.IsOnPublicNetwork())
+            {
+                Log.Warn("当前处于公用网络,同一网络内的设备可以访问本程序的信令接口");
+                MessageBox.Show(
+                    "检测到当前连接的是「公用网络」(咖啡馆、机场等常见场景)。\n\n" +
+                    "为了让平板能连上,本程序需要监听局域网端口,防火墙放行规则也覆盖了公用网络。\n" +
+                    "这意味着同一个 Wi-Fi 下的其他设备可以访问本程序的页面和信令接口。\n\n" +
+                    "配对码只有 6 位,尽量在可信网络下使用;用完请关闭本程序。\n\n" +
+                    "这条提示只出现一次,不会打断正在进行的共享。",
+                    "第二块屏 · 网络安全提示",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+
             // 只在这里初始化 WinForms:它需要一个可写的临时目录,
             // 而 --serve / --diagnose 根本用不到界面,不该被它拖累。
             ApplicationConfiguration.Initialize();
@@ -81,6 +108,126 @@ internal static class Program
             ShowError(
                 "第二块屏 启动失败",
                 ex.Message + "\n\n完整日志:\n" + (Log.File ?? Path.Combine(dataDir, "运行日志.txt")));
+        }
+    }
+
+    /// <summary>
+    /// 原生推流模式:不起 HTTP 服务,也不开浏览器,直接把虚拟显示器推给平板。
+    ///
+    /// 用法:
+    ///   --stream                 自动猜本机地址(优先 USB 直连链路)
+    ///   --stream 127.0.0.1       指定给用户看的地址(本机自测)
+    ///   --stream 192.168.42.1 5000 30 6M   指定地址/端口/帧率/码率
+    ///
+    /// 平板端用 VLC 打开 tcp://本机IP:端口 即可观看。按回车或 Ctrl+C 停止。
+    /// </summary>
+    private static void RunStream(string[] args, int index)
+    {
+        var dataDir = string.Empty;
+        try
+        {
+            dataDir = AppPaths.ResolveDataDir();
+            Log.Init(dataDir);
+            Log.Info("===== 原生推流模式 =====");
+
+            // 参数:--stream [host] [port] [fps] [bitrate]
+            string? host = index + 1 < args.Length && !args[index + 1].StartsWith("--", StringComparison.Ordinal)
+                ? args[index + 1]
+                : null;
+            var port = index + 2 < args.Length && int.TryParse(args[index + 2], out var p) ? p : 5000;
+            var fps = index + 3 < args.Length && int.TryParse(args[index + 3], out var f) ? f : 30;
+            var bitrate = index + 4 < args.Length ? args[index + 4] : "6M";
+
+            if (host is null)
+            {
+                // 优先用 USB 直连链路的地址:平板和它在同一网段,直接可达
+                host = AppPaths.LanAddresses().Select((c) => c.Address).FirstOrDefault()
+                       ?? Streamer.GuessTabletAddress()
+                       ?? "127.0.0.1";
+                Log.Info("自动选择本机地址:" + host);
+            }
+
+            using var streamer = new Streamer();
+            streamer.Start(host, port, fps, bitrate);
+
+            Console.WriteLine();
+            Console.WriteLine("  原生推流已启动(不经过浏览器)");
+            Console.WriteLine("    捕获区域  " + streamer.CaptureRegion);
+            Console.WriteLine("    编码器    " + streamer.Encoder);
+            Console.WriteLine($"    平板连接  {streamer.ClientUrl}");
+            Console.WriteLine($"    参数      {fps}fps, {bitrate}");
+            Console.WriteLine();
+            Console.WriteLine("  平板端(VLC):");
+            Console.WriteLine("    「网络」→「流」→ 输入 " + streamer.ClientUrl);
+            Console.WriteLine("    建议把网络缓存调到 100~200ms 以降低延迟");
+            Console.WriteLine();
+            Console.WriteLine("  注意:ffmpeg 会先等待平板连接,连上之后才开始编码。");
+            Console.WriteLine("  按回车停止推流…");
+            Console.WriteLine();
+
+            // 停止条件:
+            //   1. 标准输入可用时,读一行(用户在终端里按回车)
+            //   2. 标准输入被重定向/关闭时,不去读 —— 否则 ReadLine 会立刻返回 null,
+            //      程序瞬间退出,而调用方还以为在推流(这个坑踩过一次:导致接收端一直干等)
+            var stop = new ManualResetEventSlim(false);
+            if (!Console.IsInputRedirected)
+            {
+                _ = Task.Run(() =>
+                {
+                    try
+                    {
+                        Console.ReadLine();
+                    }
+                    catch
+                    {
+                        // 忽略
+                    }
+                    stop.Set();
+                });
+            }
+            else
+            {
+                Log.Info("标准输入已重定向,不等待回车;结束进程即可停止推流");
+            }
+
+            // 守护循环:ffmpeg 在客户端断开后会以 -10053 之类错误退出,
+            // 这里自动重新起一次,让平板随时可以重连(否则用户一断线就得回电脑重启)。
+            var restarts = 0;
+            while (!stop.IsSet)
+            {
+                while (!stop.IsSet && !streamer.HasExited)
+                {
+                    Thread.Sleep(500);
+                }
+
+                if (stop.IsSet) break;
+
+                restarts += 1;
+                Log.Warn($"推流中断,准备第 {restarts} 次重连(等平板重新连接)");
+                Console.WriteLine($"  推流中断,已自动重启第 {restarts} 次 —— 平板可以重新连接");
+
+                streamer.Dispose();
+                Thread.Sleep(1000);
+                if (stop.IsSet) break;
+
+                try
+                {
+                    streamer.Start(host, port, fps, bitrate);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("重启推流失败:" + ex.Message);
+                    break;
+                }
+            }
+
+            Log.Info("推流结束");
+        }
+        catch (Exception ex)
+        {
+            Log.Error("推流启动失败:" + ex);
+            Console.Error.WriteLine("推流启动失败:" + ex.Message);
+            Environment.ExitCode = 1;
         }
     }
 
@@ -221,6 +368,14 @@ internal static class Program
 
         // 局域网地址与端口
         lines.Add("");
+        if (AppPaths.HasUsbTethering())
+        {
+            lines.Add("  [OK  ] USB 直连: 已检测到 USB 网络共享链路(点对点,优先使用)");
+        }
+        else
+        {
+            lines.Add("  [提示] USB 直连: 未检测到。用数据线连平板并开启「USB 共享网络」可绕开 Wi-Fi 问题");
+        }
         var lan = AppPaths.LanAddresses();
         if (lan.Count == 0)
         {
@@ -269,6 +424,11 @@ internal static class Program
         if (FirewallHelper.HasRule())
         {
             lines.Add("  [OK  ] 防火墙: 已存在本程序的放行规则");
+            if (FirewallHelper.IsOnPublicNetwork())
+            {
+                lines.Add("  [注意] 当前网络为「公用网络」:放行规则同样生效,");
+                lines.Add("         同一网络下的其他设备可访问本程序的页面与信令接口。");
+            }
         }
         else
         {

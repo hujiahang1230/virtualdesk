@@ -7,6 +7,15 @@ import { PAIR_CODE_LENGTH, SESSION_TTL_MS } from '@/lib/rtc';
 /** 配对码字符集:纯数字,避免平板上输入歧义 */
 const CODE_ALPHABET = '0123456789';
 
+/**
+ * 单个会话描述(SDP)的大小上限。
+ *
+ * 之前这个数字在 session/route.ts 与 session/[code]/route.ts 各写了一份,
+ * 免安装版那边还有第三份(WebHost.cs 的 SdpMaxLength)。三处一旦漂移,
+ * 就会出现"Web 模式收下了、便携版拒收"这种只在换运行时才暴露的问题。
+ */
+export const SDP_MAX_LENGTH = 200_000;
+
 /** 数据库不可用 / 未配置连接串时抛出,由路由转换成 503 */
 export class DatabaseUnavailableError extends Error {
   constructor(message: string) {

@@ -351,7 +351,7 @@ export const SELF_BUILT_SOLUTIONS: SolutionRow[] = [
     name: '纯浏览器 WebRTC(本原型)',
     transport: 'WebRTC / 公共 STUN',
     latency: '局域网内 70–120 ms',
-    extended: '不支持(浏览器只能镜像)',
+    extended: '需装虚拟显示驱动(Windows 便携版带选屏引导)',
     touch: '可自研(需原生注入端)',
     note: '零安装、平板即用;受浏览器沙箱限制,拿不到虚拟显示器,也没有系统级输入注入。',
   },
@@ -380,7 +380,7 @@ export const ROADMAP: RoadmapPhase[] = [
     title: '打通镜像链路(本原型)',
     goal: '用浏览器把电脑画面送到平板,验证 Wi-Fi 环境下的真实延迟与画质。',
     tasks: [
-      'getDisplayMedia 采集 1080p60,contentHint 设为 detail',
+      'getDisplayMedia 按显示器原生分辨率采集,contentHint 设为 detail',
       'WebRTC 点对点传输,信令只交换一次 SDP(非 trickle)',
       '平板端 jitterBufferTarget 设为 0,全屏播放',
     ],
@@ -429,9 +429,10 @@ export interface Limitation {
 
 export const LIMITATIONS: Limitation[] = [
   {
-    title: '浏览器只能镜像,做不了扩展屏',
+    title: '浏览器不能自己创建显示输出',
     detail:
-      'getDisplayMedia() 采集的是系统里已经存在的显示器或窗口,浏览器无法创建新的显示输出。要“多一块屏”,必须安装虚拟显示驱动(Windows IddCx、macOS CGVirtualDisplay、Linux evdi),这不是纯 Web 能绕过的限制。',
+      'getDisplayMedia() 采集的是系统里已经存在的显示器或窗口,浏览器无法创建新的显示输出。要“多一块屏”,必须安装虚拟显示驱动(Windows IddCx、macOS CGVirtualDisplay、Linux evdi),这不是纯 Web 能绕过的限制。' +
+      '本项目的做法是:装好驱动把那块屏设为扩展模式,再引导用户共享它 —— 此时平板拿到的就是真正的扩展桌面,而不是主屏的镜像。',
   },
   {
     title: '没有系统级输入注入',
@@ -451,7 +452,7 @@ export const LIMITATIONS: Limitation[] = [
   {
     title: '硬件与环境差异',
     detail:
-      '编码器能力、平板解码器支持(尤其 AV1 / HEVC)、Wi-Fi 信道拥塞都会影响体验。原型固定 1080p60 上限、8 Mbps 码率上限,条件不足时会自动降级。',
+      '编码器能力、平板解码器支持(尤其 AV1 / HEVC)、Wi-Fi 信道拥塞都会影响体验。采集按显示器原生分辨率进行、码率上限 8 Mbps,条件不足时会自动降级(1080p30,再不行交由浏览器决定)。',
   },
   {
     title: '信令服务器不保存画面',

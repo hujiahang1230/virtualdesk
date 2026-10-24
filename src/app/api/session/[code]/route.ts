@@ -1,6 +1,13 @@
 import { NextResponse } from 'next/server';
 
-import { DatabaseUnavailableError, getSession, isValidPairCode, updateSessionSignal } from '@/lib/session';
+import {
+  DatabaseUnavailableError,
+  getSession,
+  isValidPairCode,
+  SDP_MAX_LENGTH,
+  updateSessionSignal,
+} from '@/lib/session';
+import { allowRequest, clientIp } from '@/lib/rate-limit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,8 +20,20 @@ interface PutBody {
 }
 
 /** GET /api/session/[code] —— 返回该会话的 offer 与 answer,不存在返回 404 */
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(request: Request, context: RouteContext) {
   const { code } = await context.params;
+
+  // 限流放在参数校验**之前**:穷举者用的是格式合法的 6 位码,必须限住;
+  // 而拿垃圾码来刷的请求虽然立刻 400、不查库,但同样会占用连接 ——
+  // 放在校验之后等于给这类洪水留了个不受限的旁路。
+  //
+  // 阈值留了 20% 余量给平板端的正常轮询(1200ms 一次 ≈ 50 次/分钟)。
+  if (!allowRequest(clientIp(request), 'signal')) {
+    return NextResponse.json(
+      { error: '请求过于频繁,请稍后再试。' },
+      { status: 429, headers: { 'Retry-After': '60' } },
+    );
+  }
 
   if (!isValidPairCode(code)) {
     return NextResponse.json({ error: '配对码必须是 6 位数字' }, { status: 400 });
@@ -27,19 +46,9 @@ export async function GET(_request: Request, context: RouteContext) {
     }
     return NextResponse.json(session);
   } catch (error) {
-    if (error instanceof DatabaseUnavailableError) {
-      return NextResponse.json({ error: error.message }, { status: 503 });
-    }
-    const message = error instanceof Error ? error.message : '未知错误';
-    console.error('[api/session] GET 失败:', message);
-    return NextResponse.json(
-      { error: '读取会话失败,请检查数据库连接(DATABASE_URL)。', detail: message },
-      { status: 500 },
-    );
+    return errorResponse(error, 'GET');
   }
 }
-
-const SDP_MAX_LENGTH = 200_000;
 
 /**
  * 校验请求体:{ type: "offer"|"answer", sdp: string }
@@ -105,6 +114,14 @@ function parseBody(body: unknown): { ok: true; value: PutBody } | { ok: false; e
 export async function PUT(request: Request, context: RouteContext) {
   const { code } = await context.params;
 
+  // 同 GET:先限流再校验,不给垃圾流量留旁路
+  if (!allowRequest(clientIp(request), 'signal')) {
+    return NextResponse.json(
+      { error: '请求过于频繁,请稍后再试。' },
+      { status: 429, headers: { 'Retry-After': '60' } },
+    );
+  }
+
   if (!isValidPairCode(code)) {
     return NextResponse.json({ error: '配对码必须是 6 位数字' }, { status: 400 });
   }
@@ -130,14 +147,27 @@ export async function PUT(request: Request, context: RouteContext) {
     }
     return NextResponse.json({ ok: true, code, type });
   } catch (error) {
-    if (error instanceof DatabaseUnavailableError) {
-      return NextResponse.json({ error: error.message }, { status: 503 });
-    }
-    const message = error instanceof Error ? error.message : '未知错误';
-    console.error('[api/session] PUT 失败:', message);
-    return NextResponse.json(
-      { error: '写入信令失败,请检查数据库连接(DATABASE_URL)。', detail: message },
-      { status: 500 },
-    );
+    return errorResponse(error, 'PUT');
   }
+}
+
+/**
+ * 统一的错误响应。
+ *
+ * 刻意**不**把驱动的原始错误回给客户端:postgres.js 的 error.message 里通常含
+ * host / port / dbname / user。完整错误写服务端日志,客户端只拿到固定文案 +
+ * 一个 requestId,用户报障时凭 id 就能定位到具体那一行。
+ */
+function errorResponse(error: unknown, method: string): NextResponse {
+  if (error instanceof DatabaseUnavailableError) {
+    return NextResponse.json({ error: error.message }, { status: 503 });
+  }
+
+  const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  console.error(`[api/session] ${method} 失败 [${requestId}]:`, error);
+
+  return NextResponse.json(
+    { error: '信令服务暂时不可用,请稍后重试。', requestId },
+    { status: 500 },
+  );
 }

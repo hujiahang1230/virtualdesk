@@ -38,13 +38,19 @@ export async function GET() {
       },
     });
   } catch (error) {
-    const detail = error instanceof Error ? error.message : '未知错误';
+    // 刻意**不**把原始错误回给客户端:postgres.js 的 error.message 里含
+    // host / port / dbname / user,而这个接口没有任何鉴权、局域网里可直接访问。
+    // 完整错误写服务端日志,客户端拿 requestId,报障时凭它定位。
+    const requestId = `req_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    console.error(`[api/health] 数据库探测失败 [${requestId}]:`, error);
+
     return NextResponse.json(
       {
         ...base,
         status: 'degraded',
         database: { configured: true, reachable: false, target: maskedDatabaseUrl() },
-        detail,
+        hint: '数据库不可达,请确认 PostgreSQL 已启动且 DATABASE_URL 正确。',
+        requestId,
       },
       { status: 503 },
     );

@@ -21,6 +21,14 @@ import postgres from 'postgres';
 const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, '..');
 
+/**
+ * 兜底连接串指向 scripts/dev-postgres.mjs 拉起的一次性开发库(端口 55432)。
+ *
+ * 这个端口是**刻意**和 5432 分开的:开发机上常驻的 PostgreSQL 一般占用 5432,
+ * 一次性验证库用 55432 就能两者共存、互不干扰。
+ * 注意它只对本脚本生效 —— 应用侧(src/db、DATABASE_URL)默认仍是 5432,
+ * 两边不一致是预期行为,跑 db:setup 前请确认 DATABASE_URL 指向你真正要用的库。
+ */
 const DEFAULT_URL = 'postgres://postgres@127.0.0.1:55432/virtualdesk';
 const DATABASE_URL = process.env.DATABASE_URL || DEFAULT_URL;
 const INIT_SQL = join('drizzle', '0000_init.sql');

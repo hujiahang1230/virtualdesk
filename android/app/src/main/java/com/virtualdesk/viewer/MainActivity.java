@@ -63,6 +63,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     /** 首帧上屏后隐藏状态文字;每次重新连接都要复位 */
     private volatile boolean firstFrameShown = false;
 
+    /** 帧率统计窗口 */
+    private int renderedFrames = 0;
+    private long fpsWindowStartMs = 0;
+
     /**
      * 是否"铺满"屏幕(裁剪溢出),默认 true。
      * PC 端可通过 intent extra fill=false 切换成"完整可见、留黑边"。
@@ -323,14 +327,35 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 return;
             }
             if (index == MediaCodec.INFO_TRY_AGAIN_LATER) return;
-            if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue;
+            if (index == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                MediaFormat out = codec.getOutputFormat();
+                Log.i(TAG, "解码输出格式 " + out.getString(MediaFormat.KEY_MIME)
+                        + " " + out.getInteger(MediaFormat.KEY_WIDTH) + "x"
+                        + out.getInteger(MediaFormat.KEY_HEIGHT));
+                continue;
+            }
             if (index < 0) return;
 
             boolean render = info.size > 0;
             codec.releaseOutputBuffer(index, render);
+
             if (render && !firstFrameShown) {
                 firstFrameShown = true;
                 setStatus(null);
+                renderedFrames = 0;
+                fpsWindowStartMs = System.currentTimeMillis();
+                Log.i(TAG, "首帧已上屏");
+            } else if (render) {
+                renderedFrames += 1;
+                long now = System.currentTimeMillis();
+                long elapsed = now - fpsWindowStartMs;
+                if (elapsed >= 3000) {
+                    double fps = renderedFrames * 1000.0 / elapsed;
+                    Log.i(TAG, String.format("解码帧率 %.1f fps(%d 帧 / %d ms)",
+                            fps, renderedFrames, elapsed));
+                    renderedFrames = 0;
+                    fpsWindowStartMs = now;
+                }
             }
         }
     }

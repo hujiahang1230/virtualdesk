@@ -231,13 +231,15 @@ internal static class Program
             // ---- 启动 App ----
             if (!skipAdb)
             {
-                if (!Adb.StartApp(adb!, port))
+                // --fit:显示完整画面(留黑边);默认是铺满(裁掉溢出的两侧)
+                var fill = !args.Contains("--fit");
+                if (!Adb.StartApp(adb!, port, fill))
                 {
                     Console.WriteLine("  ⚠ 自动启动失败,请手动点开平板上的「第二块屏」");
                 }
                 else
                 {
-                    Console.WriteLine("  ✓ 已在平板上启动「第二块屏」");
+                    Console.WriteLine($"  ✓ 已在平板上启动「第二块屏」({(fill ? "铺满" : "完整显示")})");
                 }
                 Adb.StayAwake(adb!);
             }

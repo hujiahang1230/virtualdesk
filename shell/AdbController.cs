@@ -165,12 +165,18 @@ internal static class Adb
         return output.Contains("Success", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>启动 App,并把端口作为启动参数传进去</summary>
-    public static bool StartApp(string adb, int port)
+    /// <summary>
+    /// 启动 App,并把端口与显示模式作为启动参数传进去。
+    ///
+    /// fill = true  等比铺满屏幕,溢出部分裁掉(默认)
+    /// fill = false 等比缩放到完整可见,留黑边
+    /// </summary>
+    public static bool StartApp(string adb, int port, bool fill = true)
     {
         var output = Run(adb, [
             "shell", "am", "start", "-n", $"{PackageName}/{ActivityName}",
             "--ei", "port", port.ToString(),
+            "--ez", "fill", fill ? "true" : "false",
         ]);
         return output is not null && !output.Contains("Error", StringComparison.OrdinalIgnoreCase);
     }

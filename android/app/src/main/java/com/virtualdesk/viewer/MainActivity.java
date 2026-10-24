@@ -11,6 +11,7 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.TextView;
@@ -62,6 +63,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     /** 首帧上屏后隐藏状态文字;每次重新连接都要复位 */
     private volatile boolean firstFrameShown = false;
 
+    /**
+     * 是否"铺满"屏幕(裁剪溢出),默认 true。
+     * PC 端可通过 intent extra fill=false 切换成"完整可见、留黑边"。
+     */
+    private boolean fillScreen = true;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -91,7 +98,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
         int port = getIntent() == null ? DEFAULT_PORT
                 : getIntent().getIntExtra("port", DEFAULT_PORT);
-        Log.i(TAG, "启动,端口 " + port);
+        fillScreen = getIntent() == null || getIntent().getBooleanExtra("fill", true);
+        Log.i(TAG, "启动,端口 " + port + ",铺满模式=" + fillScreen);
 
         worker = new Thread(() -> runLoop(port), "vd-receive");
         worker.setDaemon(true);
@@ -331,11 +339,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     /** 给裸 NAL 载荷补上起始码(csd-0/csd-1 也要求 Annex-B 格式) */
     /**
-     * 按视频宽高比调整 SurfaceView,保持等比并居中留边。
+     * 调整 SurfaceView 的显示区域。
      *
-     * 为什么必须做:SurfaceView 默认把缓冲区**拉伸**填满,而平板常见是 16:10 或
-     * 2.36:1 的长屏、电脑虚拟屏通常是 16:9,直接拉伸会让画面变形(字被压扁/拉宽)。
-     * 副屏要的是"看得清、不变形",所以宁可上下或左右留黑边。
+     * 两种模式:
+     *   fill = true(默认)  等比放大到**铺满**屏幕,超出的部分裁掉(不拉伸变形)
+     *   fill = false       等比缩放到完整可见,留黑边(letterbox)
+     *
+     * 为什么要做选择:虚拟屏通常是 16:9,而平板常见 16:10 或 3:2。
+     * 直接拉伸会变形;留黑边会有边;裁剪会切掉两侧内容。
+     * 没有一种做法同时满足"铺满 / 不变形 / 不丢内容",只能按偏好取舍。
+     * 想三者兼得,得让虚拟屏分辨率匹配平板比例(见 README)。
      */
     private void applyAspectRatio(int videoWidth, int videoHeight) {
         if (videoWidth <= 0 || videoHeight <= 0) return;
@@ -348,32 +361,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 int availableWidth = parent.getWidth();
                 int availableHeight = parent.getHeight();
                 if (availableWidth <= 0 || availableHeight <= 0) {
-                    // 布局还没测量完,等下一次(重连时还会再调一次)
+                    // 布局还没测量完;重连时还会再调一次
                     return;
                 }
 
                 double videoAspect = (double) videoWidth / videoHeight;
                 double screenAspect = (double) availableWidth / availableHeight;
+                boolean widerVideo = videoAspect > screenAspect;
 
                 int targetWidth;
                 int targetHeight;
-                if (videoAspect > screenAspect) {
-                    // 视频更宽:左右顶满,上下留边
-                    targetWidth = availableWidth;
-                    targetHeight = (int) Math.round(availableWidth / videoAspect);
+                if (fillScreen) {
+                    // 铺满:以"更受限"的一边为准放大,另一边溢出后被父容器裁掉
+                    if (widerVideo) {
+                        targetHeight = availableHeight;
+                        targetWidth = (int) Math.round(availableHeight * videoAspect);
+                    } else {
+                        targetWidth = availableWidth;
+                        targetHeight = (int) Math.round(availableWidth / videoAspect);
+                    }
                 } else {
-                    // 视频更高:上下顶满,左右留边
-                    targetHeight = availableHeight;
-                    targetWidth = (int) Math.round(availableHeight * videoAspect);
+                    // 完整可见:以"更宽松"的一边为准缩小,另一边留边
+                    if (widerVideo) {
+                        targetWidth = availableWidth;
+                        targetHeight = (int) Math.round(availableWidth / videoAspect);
+                    } else {
+                        targetHeight = availableHeight;
+                        targetWidth = (int) Math.round(availableHeight * videoAspect);
+                    }
                 }
 
                 FrameLayout.LayoutParams params =
                         new FrameLayout.LayoutParams(targetWidth, targetHeight);
                 params.gravity = Gravity.CENTER;
+                // 溢出的部分必须裁掉,否则会画到屏幕外
+                ((ViewGroup) parent).setClipChildren(true);
                 surfaceView.setLayoutParams(params);
 
                 Log.i(TAG, "画面布局 " + targetWidth + "x" + targetHeight
-                        + "(容器 " + availableWidth + "x" + availableHeight + ")");
+                        + "(容器 " + availableWidth + "x" + availableHeight
+                        + ", 模式 " + (fillScreen ? "铺满/裁切" : "完整/留边") + ")");
             } catch (Exception e) {
                 Log.w(TAG, "调整画面比例失败:" + e.getMessage());
             }

@@ -49,6 +49,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     /** 单调递增的呈现时间戳步长;解码器只用它做排序,不等于真实帧率 */
     private static final long FRAME_DURATION_US = 33_333L;
 
+    /** Annex-B 起始码。拼访问单元与 csd 时必须带上 */
+    private static final byte[] START_CODE = { 0, 0, 0, 1 };
+
     private SurfaceView surfaceView;
     private TextView statusView;
     private Surface surface;
@@ -154,6 +157,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             int width = readInt32(header, 4);
             int height = readInt32(header, 8);
             Log.i(TAG, "视频尺寸 " + width + "x" + height);
+            applyAspectRatio(width, height);
             setStatus("已连接,正在等待首帧…\n" + width + "×" + height);
 
             playStream(in, width, height);
@@ -212,7 +216,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     continue;
                 }
 
-                // 其余 NAL(1 非关键片 / 5 关键片 / 6 SEI 等)拼进当前访问单元
+                // 其余 NAL(1 非关键片 / 5 关键片 / 6 SEI 等)拼进当前访问单元。
+                //
+                // 注意:必须把起始码补回去!AnnexBReader 交付的是**不含起始码**的 NAL 载荷,
+                // 而 MediaCodec 的输入缓冲区要求标准 Annex-B(每个 NAL 前带 00 00 01)。
+                // 第一版漏了这一步,结果解码器虽然 start 成功,却一帧都解不出来
+                // (App 一直停在「正在等待首帧」)。
+                accessUnit.write(START_CODE);
                 accessUnit.write(nal);
             }
 
@@ -245,8 +255,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         MediaCodec codec = MediaCodec.createDecoderByType("video/avc");
         MediaFormat format = MediaFormat.createVideoFormat("video/avc", width, height);
 
-        if (sps != null) format.setByteBuffer("csd-0", ByteBuffer.wrap(sps));
-        if (pps != null) format.setByteBuffer("csd-1", ByteBuffer.wrap(pps));
+        if (sps != null) format.setByteBuffer("csd-0", ByteBuffer.wrap(withStartCode(sps)));
+        if (pps != null) format.setByteBuffer("csd-1", ByteBuffer.wrap(withStartCode(pps)));
 
         if (lowLatency) {
             try {
@@ -318,6 +328,64 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     // ------------------------------------------------------------ 工具
+
+    /** 给裸 NAL 载荷补上起始码(csd-0/csd-1 也要求 Annex-B 格式) */
+    /**
+     * 按视频宽高比调整 SurfaceView,保持等比并居中留边。
+     *
+     * 为什么必须做:SurfaceView 默认把缓冲区**拉伸**填满,而平板常见是 16:10 或
+     * 2.36:1 的长屏、电脑虚拟屏通常是 16:9,直接拉伸会让画面变形(字被压扁/拉宽)。
+     * 副屏要的是"看得清、不变形",所以宁可上下或左右留黑边。
+     */
+    private void applyAspectRatio(int videoWidth, int videoHeight) {
+        if (videoWidth <= 0 || videoHeight <= 0) return;
+
+        runOnUiThread(() -> {
+            try {
+                View parent = (View) surfaceView.getParent();
+                if (parent == null) return;
+
+                int availableWidth = parent.getWidth();
+                int availableHeight = parent.getHeight();
+                if (availableWidth <= 0 || availableHeight <= 0) {
+                    // 布局还没测量完,等下一次(重连时还会再调一次)
+                    return;
+                }
+
+                double videoAspect = (double) videoWidth / videoHeight;
+                double screenAspect = (double) availableWidth / availableHeight;
+
+                int targetWidth;
+                int targetHeight;
+                if (videoAspect > screenAspect) {
+                    // 视频更宽:左右顶满,上下留边
+                    targetWidth = availableWidth;
+                    targetHeight = (int) Math.round(availableWidth / videoAspect);
+                } else {
+                    // 视频更高:上下顶满,左右留边
+                    targetHeight = availableHeight;
+                    targetWidth = (int) Math.round(availableHeight * videoAspect);
+                }
+
+                FrameLayout.LayoutParams params =
+                        new FrameLayout.LayoutParams(targetWidth, targetHeight);
+                params.gravity = Gravity.CENTER;
+                surfaceView.setLayoutParams(params);
+
+                Log.i(TAG, "画面布局 " + targetWidth + "x" + targetHeight
+                        + "(容器 " + availableWidth + "x" + availableHeight + ")");
+            } catch (Exception e) {
+                Log.w(TAG, "调整画面比例失败:" + e.getMessage());
+            }
+        });
+    }
+
+    private static byte[] withStartCode(byte[] nal) {
+        byte[] out = new byte[nal.length + 4];
+        System.arraycopy(START_CODE, 0, out, 0, 4);
+        System.arraycopy(nal, 0, out, 4, nal.length);
+        return out;
+    }
 
     private static byte[] readFully(InputStream in, int length) throws IOException {
         byte[] out = new byte[length];
@@ -443,11 +511,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
         }
 
-        /** 去掉尾部残留的 00(它们是下一个起始码的前两个字节),空则返回 null */
+        /**
+         * 去掉尾部属于下一个起始码的 00。
+         *
+         * 只去掉最多 3 个:起始码是 00 00 01 或 00 00 00 01,所以最多 3 个前导 0。
+         * 第一版是"去掉所有尾部 0",理论上会误伤以 0x00 结尾的 NAL(H.264 的
+         * rbsp_trailing_bits 保证实际不会,但没必要冒这个险)。
+         */
         private static byte[] trim(ByteArrayOutputStream collect) {
             byte[] data = collect.toByteArray();
             int length = data.length;
-            while (length > 0 && data[length - 1] == 0) length -= 1;
+            int removed = 0;
+            while (length > 0 && data[length - 1] == 0 && removed < 3) {
+                length -= 1;
+                removed += 1;
+            }
             if (length == 0) return null;
             byte[] nal = new byte[length];
             System.arraycopy(data, 0, nal, 0, length);

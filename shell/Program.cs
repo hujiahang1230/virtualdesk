@@ -293,8 +293,11 @@ internal static class Program
         string[] candidates =
         [
             Path.Combine(AppPaths.ExeDir, "virtualdesk-viewer.apk"),
-            Path.Combine(AppPaths.ExeDir, "..", "..", "..", "..", "..", "tools", "apk", "virtualdesk-viewer.apk"),
         ];
+
+        // 开发时 APK 在项目 tools/apk 下,与 exe 的层级关系随构建方式而变,逐层向上找
+        var dev = AppPaths.FindUpwards(Path.Combine("tools", "apk", "virtualdesk-viewer.apk"));
+        if (dev is not null) candidates = [.. candidates, dev];
 
         foreach (var candidate in candidates)
         {

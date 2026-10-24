@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deflateRawSync, inflateRawSync } from 'node:zlib';
+import { deflateRawSync } from 'node:zlib';
 
 const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const base = join(projectRoot, '.android-build');
@@ -85,7 +85,17 @@ function crc32(buffer) {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-/** 读 zip:返回 [{ name, data }],数据已解压 */
+/**
+ * 读 zip,保留每个条目**原始的压缩方式与压缩后字节**。
+ *
+ * 为什么不能像最初那样全部解压再用 deflate 重写:
+ *   Android 11+（targetSdk ≥ 30）要求 `resources.arsc` 必须**不压缩**且 4 字节对齐,
+ *   否则安装直接失败:
+ *     Failure [-124: ... requires the resources.arsc of installed APKs to be stored
+ *                uncompressed and aligned on a 4-byte boundary]
+ *   aapt2 产出的 APK 里 resources.arsc 本来就是 stored,重写时把它压了就会破坏这个约定。
+ *   所以这里原样搬运,只对新增的 entries 才算压缩。
+ */
 function readZip(buffer) {
   let eocd = -1;
   for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 66000); i -= 1) {
@@ -104,7 +114,9 @@ function readZip(buffer) {
     if (buffer.readUInt32LE(offset) !== 0x02014b50) break;
 
     const method = buffer.readUInt16LE(offset + 10);
+    const crc = buffer.readUInt32LE(offset + 16);
     const compressedSize = buffer.readUInt32LE(offset + 20);
+    const uncompressedSize = buffer.readUInt32LE(offset + 24);
     const nameLength = buffer.readUInt16LE(offset + 28);
     const extraLength = buffer.readUInt16LE(offset + 30);
     const commentLength = buffer.readUInt16LE(offset + 32);
@@ -117,15 +129,20 @@ function readZip(buffer) {
     const localNameLength = buffer.readUInt16LE(localOffset + 26);
     const localExtraLength = buffer.readUInt16LE(localOffset + 28);
     const start = localOffset + 30 + localNameLength + localExtraLength;
-    const raw = buffer.subarray(start, start + compressedSize);
 
-    entries.push({ name, data: method === 8 ? inflateRawSync(raw) : Buffer.from(raw) });
+    entries.push({
+      name,
+      method,
+      crc,
+      uncompressedSize,
+      raw: Buffer.from(buffer.subarray(start, start + compressedSize)),
+    });
   }
 
   return entries;
 }
 
-/** 写 zip:统一用 deflate(压缩率比 store 好,APK 完全允许) */
+/** 写 zip:保留既有条目的压缩方式;新增条目用 deflate */
 function writeZip(entries) {
   const locals = [];
   const central = [];
@@ -133,36 +150,38 @@ function writeZip(entries) {
 
   for (const entry of entries) {
     const nameBytes = Buffer.from(entry.name, 'utf8');
-    const compressed = deflateRawSync(entry.data);
-    const crc = crc32(entry.data);
+    const isStored = entry.method === 0;
+    const payload = isStored ? entry.raw : entry.raw; // 两种都是原始压缩字节
+    const crc = entry.crc;
+    const uncompressedSize = entry.uncompressedSize;
 
     const local = Buffer.alloc(30 + nameBytes.length);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
     local.writeUInt16LE(0x0800, 6); // UTF-8 文件名
-    local.writeUInt16LE(8, 8); // deflate
+    local.writeUInt16LE(entry.method, 8);
     local.writeUInt16LE(0, 10);
     local.writeUInt16LE(0, 12);
     local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(compressed.length, 18);
-    local.writeUInt32LE(entry.data.length, 22);
+    local.writeUInt32LE(payload.length, 18);
+    local.writeUInt32LE(uncompressedSize, 22);
     local.writeUInt16LE(nameBytes.length, 26);
     local.writeUInt16LE(0, 28);
     nameBytes.copy(local, 30);
 
-    locals.push(local, compressed);
+    locals.push(local, payload);
 
     const dir = Buffer.alloc(46 + nameBytes.length);
     dir.writeUInt32LE(0x02014b50, 0);
     dir.writeUInt16LE(20, 4);
     dir.writeUInt16LE(20, 6);
     dir.writeUInt16LE(0x0800, 8);
-    dir.writeUInt16LE(8, 10);
+    dir.writeUInt16LE(entry.method, 10);
     dir.writeUInt16LE(0, 12);
     dir.writeUInt16LE(0, 14);
     dir.writeUInt32LE(crc, 16);
-    dir.writeUInt32LE(compressed.length, 20);
-    dir.writeUInt32LE(entry.data.length, 24);
+    dir.writeUInt32LE(payload.length, 20);
+    dir.writeUInt32LE(uncompressedSize, 24);
     dir.writeUInt16LE(nameBytes.length, 28);
     dir.writeUInt16LE(0, 30);
     dir.writeUInt16LE(0, 32);
@@ -173,7 +192,7 @@ function writeZip(entries) {
     nameBytes.copy(dir, 46);
 
     central.push(dir);
-    offset += local.length + compressed.length;
+    offset += local.length + payload.length;
   }
 
   const centralBuffer = Buffer.concat(central);
@@ -188,6 +207,17 @@ function writeZip(entries) {
   end.writeUInt16LE(0, 20);
 
   return Buffer.concat([...locals, centralBuffer, end]);
+}
+
+/** 把一段明文包装成 deflate 条目 */
+function deflatedEntry(name, data) {
+  return {
+    name,
+    method: 8,
+    crc: crc32(data),
+    uncompressedSize: data.length,
+    raw: deflateRawSync(data),
+  };
 }
 
 /** 递归收集 .java 与 .class */
@@ -255,12 +285,18 @@ run(java, [
 const dexPath = join(work, 'dex', 'classes.dex');
 check(dexPath, 'classes.dex');
 
-// 4. 重打包:把 classes.dex 加进 APK
+// 4. 重打包:把 classes.dex 加进 APK(其余条目原样保留压缩方式)
 const entries = readZip(readFileSync(baseApk));
-entries.push({ name: 'classes.dex', data: readFileSync(dexPath) });
+entries.push(deflatedEntry('classes.dex', readFileSync(dexPath)));
 const unaligned = join(work, 'unaligned.apk');
 writeFileSync(unaligned, writeZip(entries));
 console.log(`\n→ 重打包完成(${entries.length} 个条目,dex ${(statSync(dexPath).size / 1024).toFixed(0)} KiB)`);
+
+// 校验:resources.arsc 必须是 stored(method 0),否则 Android 11+ 会拒绝安装
+const arsc = entries.find((e) => e.name === 'resources.arsc');
+if (arsc && arsc.method !== 0) {
+  fail('resources.arsc 被压缩了,targetSdk ≥ 30 的 APK 必须保持 stored');
+}
 
 // 5. 签名证书(不存在则生成一个本地调试证书)
 const keystore = join(base, 'debug.keystore');

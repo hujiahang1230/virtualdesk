@@ -635,19 +635,54 @@ node tools/build-apk.mjs                                  # aapt2 → javac → 
 
 #### 已验证 / 未验证
 
-已验证(PC 侧,全部本机实测):
+**已在真机上跑通**(iQOO Pad / iPA2375,Android 15,1968×2800):
+
+```
+PC 端日志
+  设备 400D5E041Y00000 已就绪
+  端口隧道已建立:tcp:5000 → 平板 127.0.0.1:5000
+  App 推流编码器:h264_mf
+  平板已连接:127.0.0.1:52527
+  已发送流头:VDS1 1920×1080
+
+平板端日志
+  VirtualDesk: 连接 127.0.0.1:5000
+  VirtualDesk: 视频尺寸 1920x1080
+  VirtualDesk: 画面布局 2800x1575(容器 2800x1968)
+  VirtualDesk: 解码器已启动 1920x1080 (lowLatency=true)
+```
+
+平板全屏显示扩展桌面,无浏览器、无第三方播放器、无可见 UI。画面按 16:9 等比缩放
+(2800×1575 居中,上下留黑边),不变形。
+
+其他已验证项:
 
 ```
 工具链   aapt2 2.19 / adb 34.0.5 / d8 8.2.2 / javac 25
-APK      16.4 KiB,minSdk 26 / targetSdk 34,zipalign 校验通过,
-         apksigner verify 通过(v2 + v3 scheme)
-协议     VDS1 头正确解析;5 秒收到 1175 KiB、264 个 AUD;
-         ffprobe 确认裸流为 h264 1920x1080
-内嵌     exe 运行时能把 APK 释放到数据目录(16,787 字节)
-无设备   给出明确的 USB 调试开启指引,并以退出码 1 结束
+APK      16.4 KiB,minSdk 26 / targetSdk 34
+         apksigner verify 通过(v2 + v3)
+内嵌     exe 运行时释放 APK 并 adb install
+无设备   给出 USB 调试指引,退出码 1
 ```
 
-**未验证**:App 在真机上的解码与显示 —— 构建环境碰不到实体平板,这一环需要装机后反馈。
+#### 三个踩过的坑(值得记住)
+
+1. **`resources.arsc` 必须不压缩**
+   自己重打包 APK 时如果把所有条目都 deflate,Android 11+ 会直接拒绝安装:
+   ```
+   Failure [-124: ... requires the resources.arsc of installed APKs to be
+              stored uncompressed and aligned on a 4-byte boundary]
+   ```
+   正确做法是**原样保留** aapt2 产出的压缩方式,只追加 `classes.dex`。
+
+2. **拼访问单元必须补回起始码**
+   NAL 解析器剥离了 `00 00 01`,而 `MediaCodec` 的输入要求标准 Annex-B。
+   漏了这一步的表现很有欺骗性:解码器 `start()` 成功、日志一切正常,
+   但平板永远停在「正在等待首帧」。
+
+3. **`SurfaceView` 默认拉伸**
+   16:9 的视频铺到 16:10 的平板上会被拉伸变形。必须按比例算显示区尺寸并居中,
+   宁可留黑边也不要变形。
 
 #### 前置条件(只有一条)
 

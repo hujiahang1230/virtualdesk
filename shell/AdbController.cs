@@ -19,17 +19,24 @@ internal static class Adb
     public const string ActivityName = ".MainActivity";
 
     /// <summary>
-    /// 定位 adb.exe:程序目录 → 项目内工具链 → PATH → 常见安装位置。
+    /// 定位 adb.exe:环境变量 → 程序目录 → 项目工具链(逐层向上找)→ PATH → 常见安装位置。
     /// </summary>
     public static string? ResolveAdb()
     {
+        // 显式指定优先,便于排查与自定义部署
+        var configured = Environment.GetEnvironmentVariable("VD_ADB");
+        if (!string.IsNullOrWhiteSpace(configured) && File.Exists(configured)) return configured;
+
         var candidates = new List<string>
         {
             Path.Combine(AppPaths.ExeDir, "adb.exe"),
             Path.Combine(AppPaths.ExeDir, "platform-tools", "adb.exe"),
-            // 开发时用项目里下载的工具链
-            Path.Combine(AppPaths.ExeDir, "..", "..", "..", "..", "..", ".android-build", "sdk", "platform-tools", "adb.exe"),
         };
+
+        // 开发时用的工具链在项目内 .android-build 下;打包版放在 dist 下。
+        // 两者离 exe 的层数不同,所以逐层向上找而不是写死相对路径。
+        var toolchain = AppPaths.FindUpwards(Path.Combine(".android-build", "sdk", "platform-tools", "adb.exe"));
+        if (toolchain is not null) candidates.Add(toolchain);
 
         var pathVariable = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
         foreach (var directory in pathVariable.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))

@@ -15,6 +15,38 @@ internal static class AppPaths
 
     public static string ExeDir => Path.GetDirectoryName(ExePath)!;
 
+    /// <summary>
+    /// 从 exe 所在目录逐层向上找某个相对路径。
+    ///
+    /// 为什么不能写死 "..\..\..\..\..\":
+    ///   开发构建产物在 shell/bin/Release/net10.0-windows/win-x64(离项目根 5 层),
+    ///   而打包产物在 shell/dist(离项目根 2 层)。同一个相对路径不可能同时正确 ——
+    ///   写死会让打包版找不到工具链(实际踩过:程序报「找不到 adb.exe」)。
+    /// 逐层向上找对两种布局都成立,以后目录结构再变也不用改。
+    /// </summary>
+    public static string? FindUpwards(string relativePath, int maxLevels = 8)
+    {
+        var directory = ExeDir;
+        for (var level = 0; level <= maxLevels; level += 1)
+        {
+            try
+            {
+                var candidate = Path.GetFullPath(Path.Combine(directory, relativePath));
+                if (File.Exists(candidate) || Directory.Exists(candidate)) return candidate;
+            }
+            catch
+            {
+                // 忽略非法路径组合
+            }
+
+            var parent = Path.GetDirectoryName(directory);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, directory, StringComparison.Ordinal)) break;
+            directory = parent;
+        }
+
+        return null;
+    }
+
     /// <summary>数据目录候选:第一个真正可写的胜出</summary>
     public static IEnumerable<(string Dir, string Label)> DataDirCandidates()
     {

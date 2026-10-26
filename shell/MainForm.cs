@@ -356,7 +356,7 @@ internal sealed class MainForm : Form
                 server = new AppStreamServer(DefaultPort, DefaultFps, DefaultBitrate);
                 server.Start();
 
-                if (!Adb.StartApp(adb, DefaultPort, _fill))
+                if (!Adb.StartApp(adb, DefaultPort, _fill, DefaultFps))
                 {
                     throw new InvalidOperationException("启动平板 App 失败");
                 }
@@ -422,7 +422,7 @@ internal sealed class MainForm : Form
                 {
                     Adb.ForceStop(adb);
                     Thread.Sleep(300);
-                    Adb.StartApp(adb, DefaultPort, fill);
+                    Adb.StartApp(adb, DefaultPort, fill, DefaultFps);
                 }
                 catch (Exception ex)
                 {

@@ -206,7 +206,7 @@ internal static class Program
             {
                 // --fit:显示完整画面(留黑边);默认是铺满(裁掉溢出的两侧)
                 var fill = !args.Contains("--fit");
-                if (!Adb.StartApp(adb!, port, fill))
+                if (!Adb.StartApp(adb!, port, fill, fps))
                 {
                     Console.WriteLine("  ⚠ 自动启动失败,请手动点开平板上的「第二块屏」");
                 }

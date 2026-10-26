@@ -73,6 +73,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
      */
     private boolean fillScreen = true;
 
+    /**
+     * 期望帧率(PC 端通过 intent extra fps 传入)。
+     *
+     * 用途:调用 Surface.setFrameRate 让**面板**切到对应刷新率。
+     * 平板默认可能锁在 60Hz,即使推流是 120fps,面板也只会每 16.6ms 合成一次,
+     * 多出来的帧直接被丢掉。声明帧率后才能吃满高刷屏。
+     */
+    private int requestedFps = 60;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -103,7 +112,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         int port = getIntent() == null ? DEFAULT_PORT
                 : getIntent().getIntExtra("port", DEFAULT_PORT);
         fillScreen = getIntent() == null || getIntent().getBooleanExtra("fill", true);
-        Log.i(TAG, "启动,端口 " + port + ",铺满模式=" + fillScreen);
+        requestedFps = getIntent() == null ? 60 : getIntent().getIntExtra("fps", 60);
+        if (requestedFps <= 0) requestedFps = 60;
+        Log.i(TAG, "启动,端口 " + port + ",铺满模式=" + fillScreen + ",期望帧率=" + requestedFps);
 
         worker = new Thread(() -> runLoop(port), "vd-receive");
         worker.setDaemon(true);
@@ -483,11 +494,39 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         surface = holder.getSurface();
+        applySurfaceFrameRate();
     }
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
         surface = holder.getSurface();
+        applySurfaceFrameRate();
+    }
+
+    /**
+     * 告诉系统这块 Surface 期望的帧率,让面板切到对应刷新率。
+     *
+     * 两个作用:
+     *   1. 平板默认可能锁在 60Hz(实测 dumpsys 里 activeMode 就是 60Hz),
+     *      不声明的话高帧率内容会被合成器丢掉。
+     *   2. **即使推流只有 60fps,也把面板提到 120Hz** —— 合成器每个 vsync 都能出画面,
+     *      从"帧就绪"到"真正上屏"的等待从最多 16.6ms 降到最多 8.3ms。
+     *      实测平板解码能力约 300fps,面板刷新率才是显示延迟的主导因素。
+     */
+    private void applySurfaceFrameRate() {
+        if (surface == null || !surface.isValid()) return;
+        if (android.os.Build.VERSION.SDK_INT < 30) return;
+
+        try {
+            int panelRate = Math.max(requestedFps, 120);
+            surface.setFrameRate(
+                    panelRate,
+                    Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
+                    Surface.CHANGE_FRAME_RATE_ALWAYS);
+            Log.i(TAG, "已请求面板帧率 " + panelRate + "Hz(内容 " + requestedFps + "fps)");
+        } catch (Exception e) {
+            Log.w(TAG, "请求面板帧率失败:" + e.getMessage());
+        }
     }
 
     @Override

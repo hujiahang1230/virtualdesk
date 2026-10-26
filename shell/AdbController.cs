@@ -292,12 +292,13 @@ internal static class Adb
     /// fill = true  等比铺满屏幕,溢出部分裁掉(默认)
     /// fill = false 等比缩放到完整可见,留黑边
     /// </summary>
-    public static bool StartApp(string adb, int port, bool fill = true)
+    public static bool StartApp(string adb, int port, bool fill = true, int fps = 60)
     {
         var output = Run(adb, [
             "shell", "am", "start", "-n", $"{PackageName}/{ActivityName}",
             "--ei", "port", port.ToString(),
             "--ez", "fill", fill ? "true" : "false",
+            "--ei", "fps", fps.ToString(),
         ]);
         return output is not null && !output.Contains("Error", StringComparison.OrdinalIgnoreCase);
     }

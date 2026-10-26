@@ -282,17 +282,33 @@ internal sealed class AppStreamServer : IDisposable
 
     private Process? StartFfmpeg()
     {
-        var arguments = new List<string>
+        var arguments = new List<string> { "-hide_banner", "-loglevel", "warning", "-nostdin" };
+
+        // VD_TEST_SOURCE=1 时用合成画面代替屏幕采集。
+        // 目的:单独测量「编码→传输→解码→显示」这段在高帧率下的能力,
+        // 不受 GDI 采集上限(1080p 约 52fps)的干扰。
+        var testSource = Environment.GetEnvironmentVariable("VD_TEST_SOURCE") == "1";
+        if (testSource)
         {
-            "-hide_banner", "-loglevel", "warning", "-nostdin",
-            "-f", "gdigrab",
-            "-framerate", _fps.ToString(),
-            "-offset_x", _display.X.ToString(),
-            "-offset_y", _display.Y.ToString(),
-            "-video_size", $"{_display.Width}x{_display.Height}",
-            "-i", "desktop",
-            "-c:v", _encoder,
-        };
+            Log.Warn($"使用合成测试源(testsrc2 {_display.Width}x{_display.Height}@{_fps}),不采集屏幕");
+            arguments.AddRange([
+                "-f", "lavfi",
+                "-i", $"testsrc2=size={_display.Width}x{_display.Height}:rate={_fps}",
+            ]);
+        }
+        else
+        {
+            arguments.AddRange([
+                "-f", "gdigrab",
+                "-framerate", _fps.ToString(),
+                "-offset_x", _display.X.ToString(),
+                "-offset_y", _display.Y.ToString(),
+                "-video_size", $"{_display.Width}x{_display.Height}",
+                "-i", "desktop",
+            ]);
+        }
+
+        arguments.AddRange(["-c:v", _encoder]);
 
         // 编码器专属参数(与启动探测用的是同一份,避免"探测过但启动失败")
         arguments.AddRange(EncoderArgs(_encoder, _fps));

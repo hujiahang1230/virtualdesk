@@ -181,7 +181,7 @@ internal static class Program
                 Console.WriteLine($"  ✓ 端口隧道已建立(平板 127.0.0.1:{port} → 本机)");
 
                 // ---- 安装(只在 APK 变化或未安装时才真正执行)----
-                var install = Adb.InstallIfNeeded(adb!, apk!, dataDir);
+                var install = Adb.InstallIfNeeded(adb!, apk!, dataDir, Adb.ReadEmbeddedApkVersion());
                 if (!install.Ready)
                 {
                     Fail(install.Message);

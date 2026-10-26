@@ -70,6 +70,11 @@
     <EmbeddedResource Include="$(ApkPath)" LogicalName="VirtualDesk.Viewer.apk" />
   </ItemGroup>
 
+  <!-- APK 的 versionCode:用来判断平板上的 App 是否已是最新,避免无故重装 -->
+  <ItemGroup Condition="Exists('$(ApkPath).version')">
+    <EmbeddedResource Include="$(ApkPath).version" LogicalName="VirtualDesk.Viewer.version" />
+  </ItemGroup>
+
   <!-- ApplicationIcon 是属性,必须放 PropertyGroup;这里按条件单独设一次 -->
   <PropertyGroup Condition="Exists('$(IconPath)')">
     <ApplicationIcon>$(IconPath)</ApplicationIcon>

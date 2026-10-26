@@ -234,6 +234,15 @@ function collect(dir, suffix) {
 
 // ------------------------------------------------------------------ 主流程
 
+// APK 版本号。
+//
+// 为什么需要它:PC 端决定"要不要重装平板 App"时,如果按文件哈希比较,
+// 那么每次重新构建(哪怕只改一行注释)哈希都会变,平板就会被重装一次并弹确认框。
+// 改为按 versionCode 比较后,只有**功能真的变了**才需要重装 —— 这才是用户的预期。
+// 改平板端功能时把它 +1 即可。
+const APK_VERSION_CODE = 2;
+const APK_VERSION_NAME = '1.1';
+
 console.log('构建 Android APK');
 check(manifest, 'AndroidManifest.xml');
 check(platformJar, 'android.jar');
@@ -252,8 +261,8 @@ run(join(buildTools, 'aapt2.exe'), [
   '--manifest', manifest,
   '--min-sdk-version', MIN_SDK,
   '--target-sdk-version', TARGET_SDK,
-  '--version-code', '1',
-  '--version-name', '1.0',
+  '--version-code', String(APK_VERSION_CODE),
+  '--version-name', APK_VERSION_NAME,
 ], 'aapt2 link');
 
 // 2. javac:必须 --release 17,否则 class 文件版本高于 d8 支持范围
@@ -337,10 +346,20 @@ run(java, [
   'verify', '--verbose', signed,
 ], 'apksigner verify');
 
+// 9. 把 versionCode 写成旁路文件,供 PC 端嵌入后比较
+//
+// PC 端判断"要不要重装"时读这个值(而不是文件哈希),这样重新构建但不升版本时
+// 平板不会被无故重装。pack.mjs 会把它一并嵌进 exe。
+//
+// 文件名必须是 "<apk>.version":csproj 里用 $(ApkPath).version 定位这个资源。
+const versionFile = signed + '.version';
+writeFileSync(versionFile, String(APK_VERSION_CODE), 'utf8');
+
 const size = statSync(signed).size;
 const sha = createHash('sha256').update(readFileSync(signed)).digest('hex').slice(0, 16);
 console.log('');
 console.log('✅ APK 构建完成');
 console.log('   路径: ' + signed);
 console.log(`   大小: ${(size / 1024).toFixed(1)} KiB   sha256: ${sha}…`);
+console.log(`   版本: ${APK_VERSION_NAME} (versionCode ${APK_VERSION_CODE})`);
 console.log('   安装: adb install -r "' + signed + '"');

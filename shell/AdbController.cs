@@ -173,66 +173,85 @@ internal static class Adb
     }
 
     /// <summary>
-    /// 只在需要时安装。
+    /// 读取平板 App 当前安装的 versionCode,读不到返回 null。
+    /// </summary>
+    public static int? GetInstalledVersionCode(string adb)
+    {
+        var output = Run(adb, ["shell", "dumpsys", "package", PackageName]);
+        if (output is null) return null;
+
+        var match = System.Text.RegularExpressions.Regex.Match(output, @"versionCode=(\d+)");
+        if (!match.Success) return null;
+        return int.TryParse(match.Groups[1].Value, out var code) ? code : null;
+    }
+
+    /// <summary>
+    /// 只有在平板上的版本落后时才安装。
     ///
-    /// 为什么必须做这层判断:原先每次启动都 `adb install -r`,要 7 秒左右,
-    /// 而且部分 ROM 每次都会弹「是否安装」的确认框 —— 用户不点就一直等。
-    /// 但 App 往往几周都不变,绝大多数启动其实无事可做。
+    /// 为什么按 versionCode 而不是文件哈希:
+    ///   最初用 APK 的 SHA256 判断,结果每改一行平板端代码哈希就变,
+    ///   用户每次启动都会重装一次、并在平板上弹确认框 —— 而他明明已经装过。
+    ///   改成版本号后,只有功能真的升级(versionCode 增加)才装一次,符合直觉。
     ///
-    /// 判定依据:已安装 且 本地 APK 的 SHA256 与上次装成功时记录的一致。
-    /// 用哈希而不是版本号,是因为开发期我会反复改 APK 却忘记升 versionCode。
+    /// forceReinstall=true 时无条件重装(给"重新安装 App"按钮用)。
     /// </summary>
     public static (bool Ready, bool InstalledNow, string Message) InstallIfNeeded(
-        string adb, string apkPath, string markerDir)
+        string adb, string apkPath, string markerDir, int desiredVersionCode, bool forceReinstall = false)
     {
         var installed = IsPackageInstalled(adb);
 
-        string currentHash;
-        try
+        if (!installed)
         {
-            currentHash = Sha256Of(apkPath);
-        }
-        catch (Exception ex)
-        {
-            return (false, false, "读取 APK 失败:" + ex.Message);
+            Log.Info("平板上未安装 App,开始安装");
+            return DoInstall(adb, apkPath, markerDir, desiredVersionCode);
         }
 
-        var markerPath = Path.Combine(markerDir, ".apk-installed-sha");
-        string? recordedHash = null;
-        try
+        if (forceReinstall)
         {
-            if (File.Exists(markerPath)) recordedHash = File.ReadAllText(markerPath).Trim();
-        }
-        catch
-        {
-            // 读不到标记就当作没装过
+            Log.Info("用户要求重新安装");
+            return DoInstall(adb, apkPath, markerDir, desiredVersionCode);
         }
 
-        if (installed && string.Equals(recordedHash, currentHash, StringComparison.OrdinalIgnoreCase))
+        if (desiredVersionCode <= 0)
         {
-            Log.Info("APK 未变化且已安装,跳过安装");
-            return (true, false, "已安装(跳过)");
+            // 没有嵌入版本号(开发构建),无法比较 —— 已装就不再打扰用户
+            Log.Warn("没有嵌入 APK 版本号,无法比较;已安装则跳过");
+            return (true, false, "已安装(版本未知,跳过)");
         }
 
-        Log.Info(installed ? "APK 已更新,重新安装" : "平板上未安装 App,开始安装");
+        var installedVersion = GetInstalledVersionCode(adb);
+        if (installedVersion is not null && installedVersion.Value >= desiredVersionCode)
+        {
+            Log.Info($"平板 App 已是最新(versionCode {installedVersion} >= {desiredVersionCode}),跳过安装");
+            return (true, false, $"已安装 v{installedVersion}(跳过)");
+        }
 
+        Log.Info($"平板 App 版本落后(已装 {installedVersion?.ToString() ?? "?"},需要 {desiredVersionCode}),重新安装");
+        return DoInstall(adb, apkPath, markerDir, desiredVersionCode);
+    }
+
+    private static (bool Ready, bool InstalledNow, string Message) DoInstall(
+        string adb, string apkPath, string markerDir, int versionCode)
+    {
         if (!Install(adb, apkPath))
         {
             return (false, false,
-                "安装失败。若提示 INSTALL_FAILED_UPDATE_INCOMPATIBLE,请先在平板上卸载旧的「第二块屏」");
+                "安装失败。若提示 INSTALL_FAILED_UPDATE_INCOMPATIBLE,请先在平板上卸载旧的「第二块屏」;\n" +
+                "若平板一直弹「是否安装」,请在开发者选项里打开「USB 安装」");
         }
 
+        // 记录装过的版本,便于排查(不作为判断依据)
         try
         {
             Directory.CreateDirectory(markerDir);
-            File.WriteAllText(markerPath, currentHash);
+            File.WriteAllText(Path.Combine(markerDir, ".apk-installed-version"), versionCode.ToString());
         }
         catch (Exception ex)
         {
-            Log.Warn("写入安装标记失败(下次会重复安装):" + ex.Message);
+            Log.Warn("写入安装记录失败:" + ex.Message);
         }
 
-        return (true, true, "安装成功");
+        return (true, true, $"安装成功(v{versionCode})");
     }
 
     private static string Sha256Of(string path)
@@ -240,6 +259,27 @@ internal static class Adb
         using var stream = File.OpenRead(path);
         using var sha = System.Security.Cryptography.SHA256.Create();
         return Convert.ToHexString(sha.ComputeHash(stream));
+    }
+
+    /// <summary>
+    /// 读取 exe 内嵌的 APK versionCode(由 tools/build-apk.mjs 生成、pack 时嵌入)。
+    /// 读不到返回 0 —— 调用方据此退化为"已装就不动"。
+    /// </summary>
+    public static int ReadEmbeddedApkVersion()
+    {
+        try
+        {
+            using var stream = typeof(Adb).Assembly.GetManifestResourceStream("VirtualDesk.Viewer.version");
+            if (stream is null) return 0;
+            using var reader = new StreamReader(stream);
+            var text = reader.ReadToEnd().Trim();
+            return int.TryParse(text, out var version) ? version : 0;
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("读取内嵌 APK 版本失败:" + ex.Message);
+            return 0;
+        }
     }
 
     /// <summary>停止 App(用于"停止副屏")</summary>

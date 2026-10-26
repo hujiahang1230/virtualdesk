@@ -129,7 +129,8 @@ internal sealed class MainForm : Form
         buttons.Controls.Add(_startButton);
         buttons.Controls.Add(_stopButton);
         buttons.Controls.Add(_fillButton);
-        buttons.Controls.Add(MakeButton("📂 数据目录", Color.FromArgb(30, 41, 59), OpenDataDir));
+        buttons.Controls.Add(MakeButton("重装 App", Color.FromArgb(30, 41, 59), () => StartSecondScreen(true)));
+        buttons.Controls.Add(MakeButton("📂 数据", Color.FromArgb(30, 41, 59), OpenDataDir));
         Controls.Add(buttons);
 
         var body = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(7, 11, 20) };
@@ -166,9 +167,12 @@ internal sealed class MainForm : Form
                 "使用前提(只需准备一次):\r\n" +
                 "  1. 数据线连接平板,平板打开「开发者选项 → USB 调试」,\r\n" +
                 "     并在弹窗中点「允许」(建议勾选「一律允许」)\r\n" +
-                "  2. 显示设置里保持虚拟显示器为「扩展」状态\r\n" +
+                "  2. 建议同时在开发者选项里打开「USB 安装」——\r\n" +
+                "     否则每次升级 App 时平板会弹一次安装确认框\r\n" +
+                "  3. 显示设置里保持虚拟显示器为「扩展」状态\r\n" +
                 "\r\n" +
-                "之后每次只需点「启动副屏」。平板上不需要任何操作。",
+                "之后每次只需点「启动副屏」。平板 App 只在版本升级时重装,\r\n" +
+                "平时不会重复安装。",
         };
 
         body.Controls.Add(_headline);
@@ -314,7 +318,10 @@ internal sealed class MainForm : Form
 
     // ------------------------------------------------------------ 启动 / 停止
 
-    private void StartSecondScreen()
+    private void StartSecondScreen() => StartSecondScreen(false);
+
+    /// <param name="forceReinstall">true = 无视版本号强制重装平板 App</param>
+    private void StartSecondScreen(bool forceReinstall)
     {
         if (_starting || _server is not null) return;
 
@@ -341,7 +348,7 @@ internal sealed class MainForm : Form
                     throw new InvalidOperationException("adb reverse 失败,无法建立端口隧道");
                 }
 
-                var install = Adb.InstallIfNeeded(adb, apk, _dataDir);
+                var install = Adb.InstallIfNeeded(adb, apk, _dataDir, Adb.ReadEmbeddedApkVersion(), forceReinstall);
                 if (!install.Ready) throw new InvalidOperationException(install.Message);
                 Log.Info("App 安装状态:" + install.Message);
 

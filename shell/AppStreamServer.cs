@@ -34,11 +34,21 @@ internal sealed class AppStreamServer : IDisposable
     private Thread? _thread;
     private Process? _ffmpegProcess;
     private volatile bool _stopping;
+    private volatile bool _clientConnected;
     private readonly object _gate = new();
 
     public string CaptureRegion => $"{_display.Width}×{_display.Height} @({_display.X},{_display.Y})";
     public string Encoder => _encoder;
     public int Port => _port;
+
+    /// <summary>平板当前是否连着(控制面板用)</summary>
+    public bool IsClientConnected => _clientConnected;
+
+    /// <summary>是否已经在监听</summary>
+    public bool IsListening { get; private set; }
+
+    public int CaptureWidth => _display.Width;
+    public int CaptureHeight => _display.Height;
 
     public AppStreamServer(int port, int fps, string bitrate)
     {
@@ -116,6 +126,7 @@ internal sealed class AppStreamServer : IDisposable
     {
         _listener = new TcpListener(IPAddress.Any, _port);
         _listener.Start();
+        IsListening = true;
 
         _thread = new Thread(AcceptLoop) { IsBackground = true, Name = "vd-app-stream" };
         _thread.Start();
@@ -177,6 +188,7 @@ internal sealed class AppStreamServer : IDisposable
 
         var remote = client.Client.RemoteEndPoint?.ToString() ?? "(未知)";
         Log.Info("平板已连接:" + remote);
+        _clientConnected = true;
 
         var network = client.GetStream();
 
@@ -211,6 +223,7 @@ internal sealed class AppStreamServer : IDisposable
         finally
         {
             Log.Info($"会话结束,共转发 {totalBytes / 1024} KiB");
+            _clientConnected = false;
             StopFfmpeg();
         }
     }

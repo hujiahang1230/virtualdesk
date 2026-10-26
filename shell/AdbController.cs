@@ -165,6 +165,87 @@ internal static class Adb
         return output.Contains("Success", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>包是否已安装</summary>
+    public static bool IsPackageInstalled(string adb)
+    {
+        var output = Run(adb, ["shell", "pm", "list", "packages", PackageName]);
+        return output is not null && output.Contains($"package:{PackageName}", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 只在需要时安装。
+    ///
+    /// 为什么必须做这层判断:原先每次启动都 `adb install -r`,要 7 秒左右,
+    /// 而且部分 ROM 每次都会弹「是否安装」的确认框 —— 用户不点就一直等。
+    /// 但 App 往往几周都不变,绝大多数启动其实无事可做。
+    ///
+    /// 判定依据:已安装 且 本地 APK 的 SHA256 与上次装成功时记录的一致。
+    /// 用哈希而不是版本号,是因为开发期我会反复改 APK 却忘记升 versionCode。
+    /// </summary>
+    public static (bool Ready, bool InstalledNow, string Message) InstallIfNeeded(
+        string adb, string apkPath, string markerDir)
+    {
+        var installed = IsPackageInstalled(adb);
+
+        string currentHash;
+        try
+        {
+            currentHash = Sha256Of(apkPath);
+        }
+        catch (Exception ex)
+        {
+            return (false, false, "读取 APK 失败:" + ex.Message);
+        }
+
+        var markerPath = Path.Combine(markerDir, ".apk-installed-sha");
+        string? recordedHash = null;
+        try
+        {
+            if (File.Exists(markerPath)) recordedHash = File.ReadAllText(markerPath).Trim();
+        }
+        catch
+        {
+            // 读不到标记就当作没装过
+        }
+
+        if (installed && string.Equals(recordedHash, currentHash, StringComparison.OrdinalIgnoreCase))
+        {
+            Log.Info("APK 未变化且已安装,跳过安装");
+            return (true, false, "已安装(跳过)");
+        }
+
+        Log.Info(installed ? "APK 已更新,重新安装" : "平板上未安装 App,开始安装");
+
+        if (!Install(adb, apkPath))
+        {
+            return (false, false,
+                "安装失败。若提示 INSTALL_FAILED_UPDATE_INCOMPATIBLE,请先在平板上卸载旧的「第二块屏」");
+        }
+
+        try
+        {
+            Directory.CreateDirectory(markerDir);
+            File.WriteAllText(markerPath, currentHash);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("写入安装标记失败(下次会重复安装):" + ex.Message);
+        }
+
+        return (true, true, "安装成功");
+    }
+
+    private static string Sha256Of(string path)
+    {
+        using var stream = File.OpenRead(path);
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        return Convert.ToHexString(sha.ComputeHash(stream));
+    }
+
+    /// <summary>停止 App(用于"停止副屏")</summary>
+    public static void ForceStop(string adb) =>
+        Run(adb, ["shell", "am", "force-stop", PackageName]);
+
     /// <summary>
     /// 启动 App,并把端口与显示模式作为启动参数传进去。
     ///

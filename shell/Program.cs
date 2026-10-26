@@ -66,49 +66,17 @@ internal static class Program
             Log.Info($".NET {Environment.Version} / {Environment.OSVersion.VersionString}");
             Log.Info("临时目录:" + Path.GetTempPath());
 
-            // 提权运行会让拉起的浏览器也带上管理员令牌,和用户已有的普通权限实例冲突,
-            // 表现为 Edge/Chrome 弹「现有实例正在以提升的权限运行」。程序本身不需要管理员,
-            // 所以这里明确提醒一次,并把原因写进日志。
+            // 程序本身不需要管理员权限。以前这里有一条"提权会让拉起的浏览器带上管理员令牌"
+            // 的提示 —— 现在不再启动浏览器,那条提示已经没有意义,只保留日志记录。
             if (AppPaths.IsElevated)
             {
-                Log.Warn("检测到以管理员权限运行 —— 可能引发浏览器的权限冲突提示");
-                MessageBox.Show(
-                    "第二块屏不需要管理员权限,建议以普通权限重新打开。\n\n" +
-                    "当前是管理员权限运行时,程序拉起的浏览器也会带上管理员令牌。\n" +
-                    "如果此时你已经开着浏览器,Windows 可能弹出「现有实例正在以提升的权限运行,\n" +
-                    "是否用普通权限重启现有实例?」——在那个框里选「是」即可继续。\n\n" +
-                    "要避免这个提示:关闭本程序,然后直接双击运行(不要选「以管理员身份运行」)。",
-                    "第二块屏 · 权限提示",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                Log.Warn("以管理员权限运行;本程序不需要管理员权限");
             }
 
-            using var assets = StaticAssets.Load();
-            using var store = new SignalStore(dataDir);
-            using var host = new WebHost(assets, store);
-            host.Start();
-
-            // 放行规则是 profile=private,public。在公用网络(咖啡馆/机场)下,
-            // 同一个 Wi-Fi 的任何设备都能连到本程序,所以主动提醒一次。
-            // 只提醒、不阻断:连不上平板的代价比多暴露一个端口更大。
-            if (host.LanUrl is not null && FirewallHelper.IsOnPublicNetwork())
-            {
-                Log.Warn("当前处于公用网络,同一网络内的设备可以访问本程序的信令接口");
-                MessageBox.Show(
-                    "检测到当前连接的是「公用网络」(咖啡馆、机场等常见场景)。\n\n" +
-                    "为了让平板能连上,本程序需要监听局域网端口,防火墙放行规则也覆盖了公用网络。\n" +
-                    "这意味着同一个 Wi-Fi 下的其他设备可以访问本程序的页面和信令接口。\n\n" +
-                    "配对码只有 6 位,尽量在可信网络下使用;用完请关闭本程序。\n\n" +
-                    "这条提示只出现一次,不会打断正在进行的共享。",
-                    "第二块屏 · 网络安全提示",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Warning);
-            }
-
-            // 只在这里初始化 WinForms:它需要一个可写的临时目录,
-            // 而 --serve / --diagnose 根本用不到界面,不该被它拖累。
+            // 界面只服务 Android 副屏这一条路径:不再启动 HTTP 服务、不再打开浏览器。
+            // (Web 版信令服务仍保留给 --serve 与 npm run dev 使用。)
             ApplicationConfiguration.Initialize();
-            Application.Run(new MainForm(host.LocalUrl, host.LanUrl));
+            Application.Run(new MainForm(dataDir));
         }
         catch (Exception ex)
         {
@@ -185,7 +153,7 @@ internal static class Program
             // ---- APK ----
             // 即使跳过 ADB 也解析一次:一是把结果打出来便于排查,二是顺带验证
             // 内嵌资源能否正常释放(单文件分发时这是唯一来源)。
-            var apk = ResolveApk();
+            var apk = ResolveApkPath();
             if (apk is null)
             {
                 if (!skipAdb)
@@ -212,14 +180,14 @@ internal static class Program
                 Log.Info($"端口隧道已建立:tcp:{port} → 平板 127.0.0.1:{port}");
                 Console.WriteLine($"  ✓ 端口隧道已建立(平板 127.0.0.1:{port} → 本机)");
 
-                // ---- 安装 ----
-                Console.WriteLine("  正在安装 App,首次可能需要十几秒…");
-                if (!Adb.Install(adb!, apk!))
+                // ---- 安装(只在 APK 变化或未安装时才真正执行)----
+                var install = Adb.InstallIfNeeded(adb!, apk!, dataDir);
+                if (!install.Ready)
                 {
-                    Fail("APK 安装失败。若提示 INSTALL_FAILED_UPDATE_INCOMPATIBLE,先在平板上卸载旧的「第二块屏」。");
+                    Fail(install.Message);
                     return;
                 }
-                Console.WriteLine("  ✓ App 已安装");
+                Console.WriteLine("  ✓ App " + install.Message);
             }
 
             // ---- 推流服务(先起来,等平板连)----
@@ -294,8 +262,9 @@ internal static class Program
     ///
     /// 内嵌是为了"单文件分发":用户只拿到一个 第二块屏.exe,也能把 App 装到平板上,
     /// 不需要另外拷一个 apk 文件。释放位置放在数据目录,便于复用与排查。
+    /// 控制面板也复用这个方法。
     /// </summary>
-    private static string? ResolveApk()
+    internal static string? ResolveApkPath()
     {
         string[] candidates =
         [

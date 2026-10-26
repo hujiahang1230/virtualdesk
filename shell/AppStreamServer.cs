@@ -78,7 +78,7 @@ internal sealed class AppStreamServer : IDisposable
     {
         foreach (var encoder in new[] { "h264_nvenc", "h264_mf", "libx264" })
         {
-            if (CanEncode(ffmpeg, encoder))
+            if (CanEncode(ffmpeg, encoder, EncoderArgs(encoder, 60)))
             {
                 Log.Info("App 推流编码器:" + encoder);
                 return encoder;
@@ -87,7 +87,46 @@ internal sealed class AppStreamServer : IDisposable
         throw new InvalidOperationException("没有可用的 H.264 编码器");
     }
 
-    private static bool CanEncode(string ffmpeg, string encoder)
+    /// <summary>
+    /// 编码器专属参数。
+    ///
+    /// 关键点:必须同时给 `-pix_fmt nv12`。
+    /// h264_mf 在强制硬件(`-hw_encoding true`)时只接受 NV12,否则报
+    ///   "format negotiation failed (1/0)"
+    /// 并且**静默退回软件编码** —— 那会白吃一两个 CPU 核,延迟也更高。
+    ///
+    /// `-scenario display_remoting` / `-rate_control ld_vbr` 是 Media Foundation
+    /// 为屏幕共享准备的低延迟档位;不指定的话它按默认场景(偏画质/吞吐)工作,
+    /// 内部会积压若干帧,表现为"帧率够但拖窗口明显滞后"。
+    ///
+    /// 注意 h264_mf **不接受** -preset/-tune:ffmpeg 只会警告一句
+    /// "Codec AVOption preset has not been used",然后忽略。
+    /// </summary>
+    private static List<string> EncoderArgs(string encoder, int fps)
+    {
+        if (encoder == "h264_mf")
+        {
+            return
+            [
+                "-pix_fmt", "nv12",
+                "-hw_encoding", "true",
+                "-scenario", "display_remoting",
+                "-rate_control", "ld_vbr",
+                "-quality", "50",
+            ];
+        }
+
+        // nvenc / x264 走通用参数
+        return
+        [
+            "-preset", encoder == "h264_nvenc" ? "p1" : "ultrafast",
+            "-tune", "zerolatency",
+            "-bf", "0",
+            "-g", (fps * 2).ToString(),
+        ];
+    }
+
+    private static bool CanEncode(string ffmpeg, string encoder, List<string> encoderArgs)
     {
         try
         {
@@ -99,15 +138,16 @@ internal sealed class AppStreamServer : IDisposable
                 RedirectStandardError = true,
                 RedirectStandardOutput = true,
             };
-            foreach (var argument in new[]
-                     {
-                         "-hide_banner", "-loglevel", "error", "-nostdin",
-                         "-f", "lavfi", "-i", "nullsrc=size=320x240:rate=1",
-                         "-frames:v", "1", "-c:v", encoder, "-f", "null", "-",
-                     })
+            var probeArgs = new List<string>
             {
-                startInfo.ArgumentList.Add(argument);
-            }
+                "-hide_banner", "-loglevel", "error", "-nostdin",
+                "-f", "lavfi", "-i", "nullsrc=size=320x240:rate=1",
+                "-frames:v", "1", "-c:v", encoder,
+            };
+            probeArgs.AddRange(encoderArgs);
+            probeArgs.AddRange(["-f", "null", "-"]);
+            foreach (var argument in probeArgs) startInfo.ArgumentList.Add(argument);
+
             using var probe = Process.Start(startInfo);
             if (probe is null) return false;
             var error = probe.StandardError.ReadToEnd();
@@ -252,16 +292,19 @@ internal sealed class AppStreamServer : IDisposable
             "-video_size", $"{_display.Width}x{_display.Height}",
             "-i", "desktop",
             "-c:v", _encoder,
-            "-preset", "ultrafast",
-            "-tune", "zerolatency",
-            "-bf", "0",
-            "-g", (_fps * 2).ToString(),
+        };
+
+        // 编码器专属参数(与启动探测用的是同一份,避免"探测过但启动失败")
+        arguments.AddRange(EncoderArgs(_encoder, _fps));
+
+        arguments.AddRange([
             "-b:v", _bitrate,
             // 插入访问单元分隔符:App 端据此切分帧,不用自己判断帧边界
             "-bsf:v", "h264_metadata=aud=insert",
-            // 裸 H.264 写到 stdout(不落地文件)
+            // 裸 H.264 写到 stdout;flush_packets 让每个包立刻写出,不在 muxer 里攒
+            "-flush_packets", "1",
             "-f", "h264", "-",
-        };
+        ]);
 
         var startInfo = new ProcessStartInfo
         {

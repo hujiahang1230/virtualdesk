@@ -274,6 +274,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             try {
                 // 0 = 实时优先级
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0);
+                // 告诉解码器预期帧率,避免它按"最坏情况"预留过多缓冲
+                format.setInteger(MediaFormat.KEY_OPERATING_RATE, 60);
                 if (android.os.Build.VERSION.SDK_INT >= 30) {
                     format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
                 }

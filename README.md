@@ -119,17 +119,30 @@ winget install --id=VirtualDrivers.Virtual-Display-Driver -e
 
 测试环境:Windows 11 25H2 / Ryzen 7 5800H / RTX 3060 Laptop / iQOO Pad(Android 15)。
 
-### 采集与编码性能(8 秒实测)
+### 采集与编码性能(实测)
 
 | 配置 | 实际帧率 | CPU |
 | --- | --- | --- |
-| 1920×1080 @60 目标 | **60 fps** | 1.7 核 |
+| 1920×1080 @60 目标 | **60 fps** | **0.8 核**(硬件编码) |
 | 1600×900 @60 目标 | 60 fps | 1.5 核 |
 | 1280×720 @60 目标 | 60 fps | 1.0 核 |
 | 1920×1080 @30 目标 | 30 fps | 0.8 核 |
 
 > 早期曾在机器同时跑 Chrome + 推流时测出 41~45 fps,据此把默认值定成 30,
 > 后来发现那是**负载导致**的偏差。空闲状态能跑满 60,已修正默认值。
+
+#### 编码器必须显式开启硬件与低延迟档
+
+`h264_mf` 的默认行为对"副屏"很不合适,有三处坑:
+
+| 问题 | 现象 | 解决 |
+| --- | --- | --- |
+| 不指定 `-pix_fmt nv12` 时 `-hw_encoding true` 失败 | 报 `format negotiation failed (1/0)`,然后**静默退回软件编码** —— 白吃 1~2 个 CPU 核,延迟也更高 | 同时给 `-pix_fmt nv12` |
+| 不指定 `-scenario` / `-rate_control` | 按默认场景(偏画质/吞吐)工作,内部积压若干帧 → **帧率显示 60,但拖窗口明显滞后** | `-scenario display_remoting -rate_control ld_vbr` |
+| 误用 `-preset` / `-tune` | ffmpeg 只警告一句 `Codec AVOption preset has not been used`,然后**静默忽略** | `h264_mf` 用 MF 自己的参数;通用参数只给 nvenc/x264 |
+
+程序里这些参数集中在 `AppStreamServer.EncoderArgs()`,**启动探测与实际推流用同一份**,
+避免"探测通过、一启动就报错"。
 
 ### 平板端解码(真机日志)
 
@@ -311,6 +324,34 @@ src/                           Web 版前端(Next.js,见附录)
 - 有黑边 = 用了 `--fit`(完整显示)。默认是铺满裁切。
 
 面板上的「显示:铺满 / 完整」按钮可随时切换。
+
+### 帧率显示 60,但操作有明显延迟感?
+
+**这是两个不同的问题**:帧率说的是"每秒收到多少帧",延迟说的是"画面比实际操作晚多久"。
+帧率满、延迟高,通常是链路里**缓冲太深**。
+
+已修的坑(见 [三、实测数据](#三实测数据) 的"编码器必须显式开启硬件与低延迟档"):
+
+- `h264_mf` 没开硬件时静默跑软件编码
+- 没指定 `-scenario display_remoting` / `-rate_control ld_vbr` 时 MF 会攒帧
+
+仍然存在的固有延迟来源:
+
+| 环节 | 量级 | 能否优化 |
+| --- | --- | --- |
+| gdigrab 同步截图 | 5~10 ms | 需换 Windows.Graphics.Capture |
+| 硬件编码 | 5~15 ms | 已是最优档 |
+| TCP + USB | 1~3 ms | 已设 TCP_NODELAY |
+| MediaCodec 解码 | 10~20 ms | 已设 KEY_LOW_LATENCY |
+| 平板合成 + 面板刷新 | ≤16 ms | 受屏幕刷新率限制 |
+
+如果仍然觉得迟钝,可以试:
+
+```powershell
+# 降低画质换速度(quality 40 更快)
+# 或降低捕获分辨率
+第二块屏.exe --stream-app 5000 60 8M
+```
 
 ### 帧率不到 60?
 

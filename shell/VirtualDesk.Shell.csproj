@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!--
-    第二块屏 · 单文件免安装版
+    VirtualDesk · 单文件免安装版
 
     设计目标:
       - 一个 exe 走天下:不需要 Node、PostgreSQL、.NET 运行时
@@ -23,16 +23,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <!--
       内部程序用 ASCII 文件名:它会作为原生启动器 CreateProcess 的目标,
-      在非 Unicode 代码页下中文文件名容易出问题。用户看到的是启动器「第二块屏.exe」。
+      在非 Unicode 代码页下中文文件名容易出问题。用户看到的是启动器「virtualdesk.exe」。
     -->
-    <AssemblyName>VirtualDeskCore</AssemblyName>
+    <AssemblyName>virtualdesk-core</AssemblyName>
     <RootNamespace>VirtualDesk.App</RootNamespace>
-    <Product>第二块屏</Product>
-    <AssemblyTitle>第二块屏</AssemblyTitle>
+    <Product>VirtualDesk</Product>
+    <AssemblyTitle>VirtualDesk</AssemblyTitle>
     <Company>VirtualDesk</Company>
     <Version>2.0.0</Version>
     <FileVersion>2.0.0.0</FileVersion>
-    <Copyright>第二块屏 · 把平板变成电脑的第二块显示屏</Copyright>
+    <Copyright>VirtualDesk · 把平板变成电脑的第二块显示屏</Copyright>
 
     <!-- 自包含单文件:目标机器什么都不用装 -->
     <SelfContained>true</SelfContained>

@@ -240,8 +240,8 @@ function collect(dir, suffix) {
 // 那么每次重新构建(哪怕只改一行注释)哈希都会变,平板就会被重装一次并弹确认框。
 // 改为按 versionCode 比较后,只有**功能真的变了**才需要重装 —— 这才是用户的预期。
 // 改平板端功能时把它 +1 即可。
-const APK_VERSION_CODE = 9;
-const APK_VERSION_NAME = '1.8';
+const APK_VERSION_CODE = 10;
+const APK_VERSION_NAME = '2.0';
 
 console.log('构建 Android APK');
 check(manifest, 'AndroidManifest.xml');

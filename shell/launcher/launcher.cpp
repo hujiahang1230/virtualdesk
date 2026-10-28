@@ -1,4 +1,4 @@
-// 第二块屏 · 原生启动器
+// VirtualDesk · 原生启动器
 //
 // 为什么需要它:
 //   .NET 的"单文件"发布在以下两种情况会把内容解压到磁盘:
@@ -7,7 +7,7 @@
 //   默认解压位置是 %TEMP%\.net\<应用名>。而 %TEMP% 在某些受控环境里
 //   连目录都建不出来,表现为:
 //     Failure processing application bundle.
-//     Failed to create directory [...\Temp\.net\第二块屏\] Error code: 5
+//     Failed to create directory [...\Temp\.net\VirtualDesk\] Error code: 5
 //
 //   托管代码里的任何设置都来不及生效 —— 这份解压发生在托管代码运行之前。
 //   所以必须由一个原生小启动器先设好 DOTNET_BUNDLE_EXTRACT_BASE_DIR,
@@ -35,8 +35,8 @@
 
 namespace {
 
-constexpr const wchar_t* kInnerExeName = L"VirtualDeskCore.exe";
-constexpr const wchar_t* kAppFolder = L"第二块屏-数据";
+constexpr const wchar_t* kInnerExeName = L"virtualdesk-core.exe";
+constexpr const wchar_t* kAppFolder = L"virtualdesk-data";
 
 /// 把一个宽字符串写入文件并删除,用来判断目录是否真的可写。
 ///
@@ -115,7 +115,7 @@ std::wstring ResolveExtractDir(const std::wstring& exeDir, std::wstring* report 
 }
 
 void ShowError(const std::wstring& text) {
-    MessageBoxW(nullptr, text.c_str(), L"第二块屏 启动失败", MB_OK | MB_ICONERROR);
+    MessageBoxW(nullptr, text.c_str(), L"VirtualDesk 启动失败", MB_OK | MB_ICONERROR);
 }
 
 /// 诊断输出:既写 AttachConsole 拿到的控制台,也写文件,

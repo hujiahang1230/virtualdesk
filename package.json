@@ -25,9 +25,9 @@
     "app:web": "node shell/scripts/build-web.mjs",
     "app:pack": "node shell/scripts/pack.mjs",
     "app:build": "node shell/scripts/pack.mjs",
-    "app:run": "shell/dist/第二块屏.exe",
-    "app:serve": "shell/dist/第二块屏.exe --serve",
-    "app:diagnose": "shell/dist/第二块屏.exe --diagnose"
+    "app:run": "shell/dist/virtualdesk.exe",
+    "app:serve": "shell/dist/virtualdesk.exe --serve",
+    "app:diagnose": "shell/dist/virtualdesk.exe --diagnose"
   },
   "dependencies": {
     "drizzle-orm": "0.45.3",

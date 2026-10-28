@@ -53,8 +53,7 @@ internal static class AppPaths
         var overrideDir = Environment.GetEnvironmentVariable("VD_DATA_DIR");
         if (!string.IsNullOrWhiteSpace(overrideDir)) yield return (overrideDir, "环境变量 VD_DATA_DIR");
 
-        yield return (Path.Combine(ExeDir, "第二块屏-数据"), "exe 同级的「第二块屏-数据」目录");
-        yield return (Path.Combine(ExeDir, "VirtualDesk-data"), "exe 同级目录");
+        yield return (Path.Combine(ExeDir, "virtualdesk-data"), "exe 同级的「virtualdesk-data」目录");
 
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         if (!string.IsNullOrWhiteSpace(localAppData))
@@ -251,8 +250,7 @@ internal static class AppPaths
 
         foreach (var candidate in new[]
                  {
-                     Path.Combine(ExeDir, "第二块屏-数据", "temp"),
-                     Path.Combine(ExeDir, "VirtualDesk-data", "temp"),
+                     Path.Combine(ExeDir, "virtualdesk-data", "temp"),
                  })
         {
             if (!IsWritable(candidate)) continue;

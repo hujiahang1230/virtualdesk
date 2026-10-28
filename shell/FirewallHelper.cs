@@ -14,7 +14,7 @@ namespace VirtualDesk.App;
 internal static class FirewallHelper
 {
     /// <summary>规则名:既用于创建,也用于检测是否已存在</summary>
-    private const string RuleName = "第二块屏 (VirtualDesk)";
+    private const string RuleName = "VirtualDesk (VirtualDesk)";
 
     /// <summary>
     /// 检测防火墙规则是否已存在。

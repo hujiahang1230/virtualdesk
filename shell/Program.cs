@@ -3,7 +3,7 @@ using System.Text;
 namespace VirtualDesk.App;
 
 /// <summary>
-/// 第二块屏 · 单文件免安装版入口。
+/// VirtualDesk · 单文件免安装版入口。
 ///
 /// 启动顺序:定位数据目录 → 初始化日志 → 打开信令数据库 → 启动内置 HTTP 服务 → 打开浏览器。
 ///
@@ -62,7 +62,7 @@ internal static class Program
         {
             dataDir = AppPaths.ResolveDataDir();
             Log.Init(dataDir);
-            Log.Info($"第二块屏 单文件版启动,exe = {AppPaths.ExePath}");
+            Log.Info($"VirtualDesk 单文件版启动,exe = {AppPaths.ExePath}");
             Log.Info($".NET {Environment.Version} / {Environment.OSVersion.VersionString}");
             Log.Info("临时目录:" + Path.GetTempPath());
 
@@ -82,7 +82,7 @@ internal static class Program
         {
             Log.Error("启动失败: " + ex);
             ShowError(
-                "第二块屏 启动失败",
+                "VirtualDesk 启动失败",
                 ex.Message + "\n\n完整日志:\n" + (Log.File ?? Path.Combine(dataDir, "运行日志.txt")));
         }
     }
@@ -147,7 +147,7 @@ internal static class Program
             else
             {
                 Log.Info("VD_SKIP_ADB=1,跳过 ADB(不安装/不启动,只推流)");
-                Console.WriteLine("  ⚠ 已跳过 ADB:请自行在平板上安装并打开「第二块屏」");
+                Console.WriteLine("  ⚠ 已跳过 ADB:请自行在平板上安装并打开「VirtualDesk」");
             }
 
             // ---- APK ----
@@ -208,18 +208,18 @@ internal static class Program
                 var fill = !args.Contains("--fit");
                 if (!Adb.StartApp(adb!, port, fill, fps))
                 {
-                    Console.WriteLine("  ⚠ 自动启动失败,请手动点开平板上的「第二块屏」");
+                    Console.WriteLine("  ⚠ 自动启动失败,请手动点开平板上的「VirtualDesk」");
                 }
                 else
                 {
-                    Console.WriteLine($"  ✓ 已在平板上启动「第二块屏」({(fill ? "铺满" : "完整显示")})");
+                    Console.WriteLine($"  ✓ 已在平板上启动「VirtualDesk」({(fill ? "铺满" : "完整显示")})");
                 }
                 Adb.StayAwake(adb!);
             }
 
             Console.WriteLine();
             Console.WriteLine(skipAdb
-                ? "  等待平板上的「第二块屏」连接(按回车停止)…"
+                ? "  等待平板上的「VirtualDesk」连接(按回车停止)…"
                 : "  平板端不需要任何操作。按回车停止…");
 
             var stop = new ManualResetEventSlim(false);
@@ -260,7 +260,7 @@ internal static class Program
     /// <summary>
     /// 找 APK:优先程序目录,其次开发时的构建输出,最后用 exe 内嵌的那份。
     ///
-    /// 内嵌是为了"单文件分发":用户只拿到一个 第二块屏.exe,也能把 App 装到平板上,
+    /// 内嵌是为了"单文件分发":用户只拿到一个 virtualdesk.exe,也能把 App 装到平板上,
     /// 不需要另外拷一个 apk 文件。释放位置放在数据目录,便于复用与排查。
     /// 控制面板也复用这个方法。
     /// </summary>
@@ -508,7 +508,7 @@ internal static class Program
     /// <summary>自检:检查资源、数据目录可写性、浏览器可用性,并试绑一次端口</summary>
     private static void RunDiagnose()
     {
-        var lines = new List<string> { "第二块屏 自检报告(单文件版)" };
+        var lines = new List<string> { "VirtualDesk 自检报告(单文件版)" };
 
         void Check(string name, bool ok, string detail) =>
             lines.Add($"  [{(ok ? "OK  " : "问题")}] {name}: {detail}");
@@ -672,7 +672,7 @@ internal static class Program
             // 写不出来就算了
         }
 
-        ShowError("第二块屏 自检", report);
+        ShowError("VirtualDesk 自检", report);
     }
 
     private static void ShowError(string title, string message)

@@ -4,7 +4,7 @@ using System.Windows.Forms;
 namespace VirtualDesk.App;
 
 /// <summary>
-/// 第二块屏 · 控制面板
+/// VirtualDesk · 控制面板
 ///
 /// 只服务一件事:把这块 Windows 虚拟显示器推到平板上的自研 App 里。
 ///
@@ -77,7 +77,7 @@ internal sealed class MainForm : Form
     {
         _dataDir = dataDir;
 
-        Text = "第二块屏 · 把平板变成副屏";
+        Text = "VirtualDesk · 把平板变成副屏";
         Width = 720;
         Height = 540;
         MinimumSize = new Size(680, 500);

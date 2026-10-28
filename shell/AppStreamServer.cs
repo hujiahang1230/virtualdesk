@@ -13,7 +13,11 @@ namespace VirtualDesk.App;
 ///     App 端可以直接喂 MediaCodec,不需要解封装,延迟最低
 ///
 /// 协议:
-///   "VDS1"(4) + width(int32 LE,4) + height(int32 LE,4) + 连续 Annex-B H.264(AUD 已插入)
+///   "VDS2"(4) + width(int32 LE,4) + height(int32 LE,4)
+///   随后每帧:"length"(int32 LE,4) + 一个完整访问单元(Annex-B,含 AUD)
+///
+/// 为什么每帧带长度:VDS1 是连续裸流,App 只能靠"看到下一帧的 AUD"判断上一帧结束,
+/// 等于每帧固定多等一个帧间隔(60fps 下 16.7ms)。带长度后收满即解,无需前瞻。
 ///
 /// 之所以要自己写头:App 若要走标准路径就得解析 SPS 拿分辨率(需要实现指数哥伦布解码),
 /// 而分辨率我们本来就知道 —— 直接用 12 字节头告诉它,App 端代码能少一半。
@@ -244,7 +248,7 @@ internal sealed class AppStreamServer : IDisposable
         var header = BuildHeader(_display.Width, _display.Height);
         network.Write(header, 0, header.Length);
         network.Flush();
-        Log.Info($"已发送流头:VDS1 {_display.Width}×{_display.Height}");
+        Log.Info($"已发送流头:VDS2 {_display.Width}×{_display.Height}");
 
         // 2) 起 ffmpeg,把裸 H.264 从 stdout 转发给平板
         using var process = StartFfmpeg();

@@ -236,7 +236,7 @@ internal static class Adb
         if (!Install(adb, apkPath))
         {
             return (false, false,
-                "安装失败。若提示 INSTALL_FAILED_UPDATE_INCOMPATIBLE,请先在平板上卸载旧的「第二块屏」;\n" +
+                "安装失败。若提示 INSTALL_FAILED_UPDATE_INCOMPATIBLE,请先在平板上卸载旧的「VirtualDesk」;\n" +
                 "若平板一直弹「是否安装」,请在开发者选项里打开「USB 安装」");
         }
 

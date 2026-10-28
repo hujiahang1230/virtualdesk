@@ -11,8 +11,8 @@
  *
  * 流程:
  *   1. 生成前端嵌入包 shell/web.zip
- *   2. dotnet publish 自包含单文件 → VirtualDeskCore.exe
- *   3. 编译原生启动器(MinGW g++)→ 第二块屏.exe
+ *   2. dotnet publish 自包含单文件 → virtualdesk-core.exe
+ *   3. 编译原生启动器(MinGW g++)→ virtualdesk.exe
  *   4. 校验产物:只有这两个文件,体积在预期范围内
  *
  * 用法:
@@ -33,8 +33,8 @@ const zipPath = join(shellDir, 'web.zip');
 const launcherDir = join(shellDir, 'launcher');
 const skipWeb = process.argv.includes('--no-web');
 
-const CORE_NAME = 'VirtualDeskCore.exe';
-const ENTRY_NAME = '第二块屏.exe';
+const CORE_NAME = 'virtualdesk-core.exe';
+const ENTRY_NAME = 'virtualdesk.exe';
 
 /** MinGW g++ 候选位置 */
 const GXX_CANDIDATES = [

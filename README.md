@@ -1,22 +1,27 @@
-# 第二块屏 · 把平板变成电脑的第二块显示屏
+# VirtualDesk · 把平板变成电脑的第二块显示屏
 
 把一个 Android 平板变成 Windows 的第二块显示器:**桌面真的扩展到平板上**,鼠标能移过去、窗口能拖过去,
 而不是把主屏镜像一份。
 
-**两端都不需要浏览器**。PC 端双击一个 exe,平板端装一个 16 KiB 的 App,
+**两端都不需要浏览器**。PC 端双击一个 exe,平板端装一个 20 KiB 的 App,
 之后每次只需插上线、点一下「启动副屏」。
 
 ```
 Windows 虚拟显示器 ──► PC 端捕获+编码 ──USB/TCP──► 平板 App 解码显示
-   (VDD 驱动)          (第二块屏.exe)              (MediaCodec 硬解)
+   (VDD 驱动)          (virtualdesk.exe)              (MediaCodec 硬解)
 ```
 
 | | 实现 |
 | --- | --- |
-| PC 端 | `第二块屏.exe`(0.59 MiB 启动器)+ `VirtualDeskCore.exe`(48.3 MiB 主程序),合计 **48.9 MiB**,无需安装 |
-| 平板端 | 自研 App,**16.4 KiB**,APK 内嵌在 exe 里,首次运行自动装到平板 |
+| PC 端 | `virtualdesk.exe`(0.59 MiB 启动器)+ `virtualdesk-core.exe`(48.3 MiB 主程序),合计 **48.9 MiB**,无需安装 |
+| 平板端 | 自研 App(VirtualDesk),**20.4 KiB**,APK 内嵌在 exe 里,首次运行自动装到平板 |
 | 连接 | USB 数据线 + ADB 端口隧道,**不需要配 IP、不需要同一 Wi-Fi** |
 | 画质 | 1920×1080 @ **60fps**,12 Mbps H.264 硬件编码 |
+| 数据目录 | 与 exe 同级的 `virtualdesk-data\`(日志、安装记录、临时文件) |
+
+> **两个 exe 都是必需的**:双击运行 `virtualdesk.exe`;
+> 它负责准备可写临时目录、设置解压路径,然后拉起 `virtualdesk-core.exe`(真正的主体)。
+> 它们是 `pack` 脚本一起产出的,分开拷贝会无法启动。
 
 ---
 
@@ -52,7 +57,7 @@ winget install --id=VirtualDrivers.Virtual-Display-Driver -e
 
 ### 第 3 步:双击运行
 
-双击 `第二块屏.exe` → 控制面板弹出 → 点 **「▶ 启动副屏」**。
+双击 `virtualdesk.exe` → 控制面板弹出 → 点 **「▶ 启动副屏」**。
 
 平板会自动打开 App 并显示扩展桌面,**平板上不需要任何操作**。
 
@@ -87,7 +92,7 @@ winget install --id=VirtualDrivers.Virtual-Display-Driver -e
 │        │ ④ TCP:12 字节头(VDS2+宽+高)                    │
 │        │    之后每帧 = 4 字节长度 + 一个访问单元        │
 │        ▼                                              │
-│  第二块屏.exe (控制面板)                              │
+│  virtualdesk.exe (控制面板)                              │
 │    └─ adb reverse tcp:5000  ← 把平板的 127.0.0.1 隧道过来
 └───────────────────────────────────────────────────────┘
                         │ USB
@@ -245,8 +250,9 @@ npm run app:run            # 直接运行
 
 ```
 shell/dist/
-  第二块屏.exe          0.59 MiB   原生启动器(MinGW C++)
-  VirtualDeskCore.exe   48.29 MiB  主程序(.NET 10 自包含单文件)
+  virtualdesk.exe          0.59 MiB  原生启动器(MinGW C++,双击这个)
+  virtualdesk-core.exe    48.29 MiB  主程序(.NET 10 自包含单文件)
+  virtualdesk-data/                  首次运行后生成的数据目录
 ```
 
 为什么要两个 exe:.NET 单文件发布在**启用压缩**时,启动瞬间必须把内容解压到 `%TEMP%`;
@@ -398,7 +404,7 @@ src/                           Web 版前端(Next.js,见附录)
 ```powershell
 # 降低画质换速度(quality 40 更快)
 # 或降低捕获分辨率
-第二块屏.exe --stream-app 5000 60 8M
+virtualdesk.exe --stream-app 5000 60 8M
 ```
 
 ### 帧率不到 60?
@@ -436,7 +442,7 @@ GDI 采集     ❌ 1920×1080 上限 52fps(576p 也只 86fps)
 | 真机全链路 | ✅ 平板全屏显示扩展桌面,无浏览器、无第三方播放器 |
 | 平板端解码帧率 | ✅ 59.2 / 60.8 / 61.3 fps(连续三档,每档 3 秒) |
 | PC 端 CPU | ✅ 1080p@60 约 1.7 核 |
-| APK 构建 | ✅ 16.4 KiB,minSdk 26 / targetSdk 34,apksigner v2+v3 通过 |
+| APK 构建 | ✅ 20.4 KiB,minSdk 26 / targetSdk 34,apksigner v2+v3 通过 |
 | 安装跳过 | ✅ 已装 v2 时日志输出「已是最新,跳过安装」 |
 | 前端 | ✅ `tsc --noEmit` / `eslint` 全绿 |
 | 打包 | ✅ 48.9 MiB,双击即用 |

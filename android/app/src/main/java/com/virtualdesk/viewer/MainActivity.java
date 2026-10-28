@@ -5,6 +5,7 @@ import android.graphics.Color;
 import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.Surface;
@@ -66,6 +67,13 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     /** 帧率统计窗口 */
     private int renderedFrames = 0;
     private long fpsWindowStartMs = 0;
+    /** 本次连接累计渲染帧数(用于与 PC 端对齐计算积压) */
+    private long totalRenderedFrames = 0;
+    /** App 内部「帧到达 → 上屏」耗时统计 */
+    private double delaySumMs = 0;
+    private int delayCount = 0;
+    /** 收帧线程是否应继续运行 */
+    private volatile boolean drainRunning = false;
 
     /**
      * 是否"铺满"屏幕(裁剪溢出),默认 true。
@@ -174,8 +182,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
             // ---- 读 12 字节头 ----
             byte[] header = readFully(in, 12);
-            if (header[0] != 'V' || header[1] != 'D' || header[2] != 'S' || header[3] != '1') {
-                throw new IOException("协议不匹配(不是 VDS1 流)");
+            if (header[0] != 'V' || header[1] != 'D' || header[2] != 'S') {
+                throw new IOException("协议不匹配(不是第二块屏的流)");
+            }
+            if (header[3] != '2') {
+                throw new IOException("协议版本过旧(VDS" + (char) header[3]
+                        + "),请用最新版 PC 端和 App");
             }
             int width = readInt32(header, 4);
             int height = readInt32(header, 8);
@@ -188,14 +200,16 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     /**
-     * 解码主循环。
+     * 解码主循环(协议 VDS2:每帧 4 字节长度 + 一个完整访问单元)。
      *
-     * 关键点:按 AUD(NAL type 9)切分访问单元。PC 端已用
-     * h264_metadata=aud=insert 插入 AUD,所以每个 AUD 之后的一组 NAL 恰好是一帧,
-     * 不需要自己判断帧边界 —— 这是避免花屏/撕裂的关键。
+     * 为什么改成长度前缀:VDS1 是裸字节流,App 只能靠"看到下一帧的 AUD"
+     * 才知道上一帧结束 —— 等于每帧白等一个帧间隔(60fps 下 16.7ms)。
+     * 实测 App 内部「到达→上屏」约 28ms,其中一大半就是这个等待。
+     * 现在 PC 端把帧切好并带长度,收满即解,不需要任何前瞻。
      */
     private void playStream(InputStream in, int width, int height) throws IOException {
         MediaCodec codec = null;
+        Thread drainer = null;
         try {
             // Surface 可能还没就绪(surfaceCreated 异步回调),必须等,
             // 否则 configure(surface=null) 会把画面解到不存在的目标上,黑屏。
@@ -204,53 +218,44 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
             if (surface == null) throw new IOException("显示表面未就绪");
 
-            AnnexBReader reader = new AnnexBReader(in);
-
-            ByteArrayOutputStream accessUnit = new ByteArrayOutputStream(256 * 1024);
             byte[] sps = null;
             byte[] pps = null;
-            long ptsUs = 0;
+            drainRunning = true;
 
             while (running) {
-                byte[] nal = reader.nextNal();
-                if (nal == null) break; // EOF
-                if (nal.length == 0) continue;
-
-                int type = nal[0] & 0x1F;
-
-                if (type == 7) {                       // SPS
-                    sps = nal;
-                    continue;
+                byte[] lengthBytes = readFully(in, 4);
+                int size = readInt32(lengthBytes, 0);
+                if (size <= 0 || size > 16 * 1024 * 1024) {
+                    throw new IOException("帧长度异常:" + size);
                 }
-                if (type == 8) {                       // PPS
-                    pps = nal;
-                    continue;
+                byte[] accessUnit = readFully(in, size);
+
+                // 参数集(SPS/PPS)由 PC 端放在第一个访问单元里,提取出来配置解码器
+                if (sps == null || pps == null) {
+                    byte[][] sets = extractParamSets(accessUnit);
+                    if (sets[0] != null) sps = sets[0];
+                    if (sets[1] != null) pps = sets[1];
                 }
-                if (type == 9) {                       // AUD = 一帧的边界
-                    if (accessUnit.size() > 0) {
-                        if (codec == null) {
-                            codec = createDecoder(width, height, sps, pps);
-                        }
-                        feed(codec, accessUnit.toByteArray(), ptsUs);
-                        ptsUs += FRAME_DURATION_US;
-                        drain(codec);
-                        accessUnit.reset();
-                    }
-                    continue;
+                if (codec == null) {
+                    if (sps == null || pps == null) continue; // 还没拿到参数集
+                    codec = createDecoder(width, height, sps, pps);
+                    drainer = startDrainThread(codec);
                 }
 
-                // 其余 NAL(1 非关键片 / 5 关键片 / 6 SEI 等)拼进当前访问单元。
-                //
-                // 注意:必须把起始码补回去!AnnexBReader 交付的是**不含起始码**的 NAL 载荷,
-                // 而 MediaCodec 的输入缓冲区要求标准 Annex-B(每个 NAL 前带 00 00 01)。
-                // 第一版漏了这一步,结果解码器虽然 start 成功,却一帧都解不出来
-                // (App 一直停在「正在等待首帧」)。
-                accessUnit.write(START_CODE);
-                accessUnit.write(nal);
+                // PTS 用**到达时刻**而不是合成递增。
+                // 解码器会把 PTS 原样带到输出,于是渲染时 (now - pts) 就是
+                // App 内部「帧到达 → 上屏」的真实耗时,用于定位延迟到底在哪一段。
+                long arrivalUs = SystemClock.elapsedRealtimeNanos() / 1000;
+                feed(codec, accessUnit, arrivalUs);
             }
-
-            if (codec != null) drain(codec);
         } finally {
+            drainRunning = false;
+            if (drainer != null) {
+                try {
+                    drainer.join(500);
+                } catch (InterruptedException ignored) {
+                }
+            }
             if (codec != null) {
                 try {
                     codec.stop();
@@ -259,6 +264,78 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 codec.release();
             }
         }
+    }
+
+    /**
+     * 独立线程持续收输出帧。
+     *
+     * 为什么需要它:如果只在"喂一帧"之后顺手收一次,那么解码完成的帧要等到下一帧
+     * 到来才被拿走上屏 —— 平均多等半个帧间隔。用短超时阻塞收,解码一完成立刻上屏。
+     */
+    private Thread startDrainThread(MediaCodec codec) {
+        Thread thread = new Thread(() -> {
+            while (running && drainRunning) {
+                try {
+                    drainWithTimeout(codec, 3_000); // 3ms:既省 CPU 又能及时取帧
+                } catch (Exception e) {
+                    if (running && drainRunning) Log.w(TAG, "收帧异常:" + e.getMessage());
+                    return;
+                }
+            }
+        }, "vd-drain");
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
+    /**
+     * 从一个访问单元里提取 SPS(type 7)与 PPS(type 8)。
+     *
+     * 返回值不含起始码 —— createDecoder 会自己补,和原来 AnnexBReader 的行为保持一致。
+     */
+    private static byte[][] extractParamSets(byte[] au) {
+        byte[] sps = null;
+        byte[] pps = null;
+
+        int i = 0;
+        while (i + 3 < au.length) {
+            int startCodeLen;
+            if (au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 1) {
+                startCodeLen = 3;
+            } else if (au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 0 && au[i + 3] == 1) {
+                startCodeLen = 4;
+            } else {
+                i += 1;
+                continue;
+            }
+
+            int nalStart = i + startCodeLen;
+            if (nalStart >= au.length) break;
+            int type = au[nalStart] & 0x1F;
+
+            // 找下一个起始码,确定本 NAL 的范围
+            int next = au.length;
+            for (int j = nalStart + 1; j + 2 < au.length; j += 1) {
+                if (au[j] == 0 && au[j + 1] == 0 && au[j + 2] == 1) {
+                    next = j;
+                    break;
+                }
+                if (au[j] == 0 && au[j + 1] == 0 && au[j + 2] == 0 && j + 3 < au.length && au[j + 3] == 1) {
+                    next = j;
+                    break;
+                }
+            }
+
+            if (type == 7) {
+                sps = java.util.Arrays.copyOfRange(au, nalStart, next);
+            } else if (type == 8) {
+                pps = java.util.Arrays.copyOfRange(au, nalStart, next);
+            }
+
+            i = next;
+        }
+
+        return new byte[][]{sps, pps};
     }
 
     private MediaCodec createDecoder(int width, int height, byte[] sps, byte[] pps)
@@ -331,11 +408,23 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void drain(MediaCodec codec) {
+        drainWithTimeout(codec, 0);
+    }
+
+    /**
+     * 收输出帧。
+     *
+     * 关键改动:timeout 可以大于 0。
+     * 原来是"喂一帧才顺手收一次(超时 0)",于是解码早已完成的帧要等到下一次喂帧
+     * 才被拿走上屏 —— 平均多等半个到一整个帧间隔(60fps 下最多 16.7ms)。
+     * 现在由独立线程用短超时持续收,解码一完成就上屏。
+     */
+    private void drainWithTimeout(MediaCodec codec, long timeoutUs) {
         MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
         while (true) {
             int index;
             try {
-                index = codec.dequeueOutputBuffer(info, 0);
+                index = codec.dequeueOutputBuffer(info, timeoutUs);
             } catch (IllegalStateException e) {
                 return;
             }
@@ -356,18 +445,33 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 firstFrameShown = true;
                 setStatus(null);
                 renderedFrames = 0;
+                totalRenderedFrames = 0;
                 fpsWindowStartMs = System.currentTimeMillis();
                 Log.i(TAG, "首帧已上屏");
             } else if (render) {
                 renderedFrames += 1;
+                totalRenderedFrames += 1;
+
+                // PTS 是帧到达时刻,这里算出 App 内部的「到达 → 上屏」耗时
+                long aliveUs = SystemClock.elapsedRealtimeNanos() / 1000;
+                if (info.presentationTimeUs > 0 && aliveUs >= info.presentationTimeUs) {
+                    delaySumMs += (aliveUs - info.presentationTimeUs) / 1000.0;
+                    delayCount += 1;
+                }
+
                 long now = System.currentTimeMillis();
                 long elapsed = now - fpsWindowStartMs;
-                if (elapsed >= 3000) {
+                if (elapsed >= 1000) {
                     double fps = renderedFrames * 1000.0 / elapsed;
-                    Log.i(TAG, String.format("解码帧率 %.1f fps(%d 帧 / %d ms)",
-                            fps, renderedFrames, elapsed));
+                    double avgDelay = delayCount > 0 ? delaySumMs / delayCount : 0;
+                    // 「累计帧数 + 墙钟」与 PC 端日志同格式;两者相减得积压帧数,用于反推延迟
+                    Log.i(TAG, String.format(
+                            "解码帧率 %.1f fps(%d 帧/%d ms) | 累计 %d 帧 @ %d | 内部延迟 %.1f ms",
+                            fps, renderedFrames, elapsed, totalRenderedFrames, now, avgDelay));
                     renderedFrames = 0;
                     fpsWindowStartMs = now;
+                    delaySumMs = 0;
+                    delayCount = 0;
                 }
             }
         }

@@ -218,8 +218,16 @@ internal sealed class AppStreamServer : IDisposable
         client.NoDelay = true;
         try
         {
-            client.ReceiveBufferSize = 512 * 1024;
-            client.SendBufferSize = 512 * 1024;
+            // 缓冲区**不能开太大**。
+            //
+            // 这里原来设成 512 KiB,看起来"多多益善",实际是在给延迟挖坑:
+            // 12 Mbps 下 512 KiB 相当于 340 ms 的排队空间 —— 发送端可以远远跑在
+            // 平板消费速度前面,数据全堆在缓冲区里。实测积压约 4 帧(~67 ms)。
+            // 收到 64 KiB 后,排队上限降到约 40 ms,发送端一快就会被 TCP 压回去,
+            // 从而把"链路队列"维持在很浅的水平 —— 这正是低延迟远程桌面要的效果。
+            var socketBuffer = 64 * 1024;
+            client.ReceiveBufferSize = socketBuffer;
+            client.SendBufferSize = socketBuffer;
         }
         catch
         {
@@ -246,14 +254,49 @@ internal sealed class AppStreamServer : IDisposable
         var stdout = process.StandardOutput.BaseStream;
         long totalBytes = 0;
 
+        // 延迟诊断:统计已写出的帧数,并定期连同墙钟一起打日志。
+        // 平板端也统计"已渲染帧数 + 墙钟",两边相减就是**积压帧数**,
+        // 乘以帧间隔即端到端延迟。这是唯一不依赖外部摄像头/OCR 的能量化延迟的办法。
+        long frames = 0;
+        long lastReport = Environment.TickCount64;
+        long lastFrames = 0;
+
+        // 按访问单元切分,并给每帧加 4 字节长度前缀(协议 VDS2)。
+        //
+        // 为什么必须这么做:裸 H.264 没有帧长度,App 只能靠"看到下一帧的 AUD"
+        // 才知道上一帧结束 —— 等于硬生生多等一整帧(60fps 下 16.7ms)。
+        // 实测 App 内部「到达→上屏」约 28ms,其中 16.7ms 就是这个等待。
+        // 改成长度前缀后,App 收满 N 字节立刻解码,不需要前瞻。
+        var pending = new List<byte>(256 * 1024);
+
         try
         {
             while (!_stopping)
             {
                 var read = stdout.Read(buffer, 0, buffer.Length);
                 if (read <= 0) break;
-                network.Write(buffer, 0, read);
                 totalBytes += read;
+
+                for (var i = 0; i < read; i += 1) pending.Add(buffer[i]);
+
+                // 把 pending 里已经完整的访问单元逐个切出来发走
+                while (TryTakeAccessUnit(pending, out var accessUnit))
+                {
+                    var length = new byte[4];
+                    BitConverter.GetBytes(accessUnit.Length).CopyTo(length, 0);
+                    network.Write(length, 0, 4);
+                    network.Write(accessUnit, 0, accessUnit.Length);
+                    frames += 1;
+                }
+
+                var now = Environment.TickCount64;
+                if (now - lastReport >= 1000)
+                {
+                    var delta = frames - lastFrames;
+                    Log.Info($"[统计] 已发送 {frames} 帧(+{delta}/s) @ {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}");
+                    lastFrames = frames;
+                    lastReport = now;
+                }
             }
         }
         catch (Exception ex)
@@ -268,13 +311,49 @@ internal sealed class AppStreamServer : IDisposable
         }
     }
 
+    /// <summary>
+    /// 从 pending 里切出一个完整的访问单元(以 AUD 为界)。
+    ///
+    /// 约定:每个访问单元以 AUD(NAL type 9)开头。找到**下一个** AUD 的起始码时,
+    /// 它之前的部分就是一个完整单元。找到就移除并返回 true;否则原样保留。
+    ///
+    /// 起始码可能是 3 字节(00 00 01)或 4 字节(00 00 00 01),后者要多吃掉一个 0,
+    /// 否则切出来的单元会丢掉起始码的第一个字节,App 端解码会失败。
+    /// </summary>
+    private static bool TryTakeAccessUnit(List<byte> pending, out byte[] accessUnit)
+    {
+        accessUnit = [];
+
+        // 从 4 开始找:跳过开头那个 AUD 自身的起始码,避免刚放进来的第一帧就被切掉
+        for (var i = 4; i + 3 < pending.Count; i += 1)
+        {
+            if (pending[i] != 0 || pending[i + 1] != 0 || pending[i + 2] != 1) continue;
+            if ((pending[i + 3] & 0x1F) != 9) continue;
+
+            // 4 字节起始码:前一个字节也是 0,归入新单元
+            var boundary = i;
+            if (boundary > 0 && pending[boundary - 1] == 0) boundary -= 1;
+
+            if (boundary < 4) continue; // 太短,继续找
+
+            accessUnit = new byte[boundary];
+            pending.CopyTo(0, accessUnit, 0, boundary);
+            pending.RemoveRange(0, boundary);
+            return true;
+        }
+
+        return false;
+    }
+
     private static byte[] BuildHeader(int width, int height)
     {
         var header = new byte[12];
         header[0] = (byte)'V';
         header[1] = (byte)'D';
         header[2] = (byte)'S';
-        header[3] = (byte)'1';
+        // VDS2:帧数据改成「4 字节长度 + 访问单元」。
+        // VDS1 是裸字节流,App 必须靠下一个 AUD 判断帧边界,白等一帧(16.7ms)。
+        header[3] = (byte)'2';
         BitConverter.GetBytes(width).CopyTo(header, 4);
         BitConverter.GetBytes(height).CopyTo(header, 8);
         return header;
@@ -313,10 +392,18 @@ internal sealed class AppStreamServer : IDisposable
         // 编码器专属参数(与启动探测用的是同一份,避免"探测过但启动失败")
         arguments.AddRange(EncoderArgs(_encoder, _fps));
 
+        // bsf 只给"自己不产生 AUD"的编码器。
+        //
+        // h264_mf 已经会在每个访问单元前写 AUD(实测 3 秒 60fps = 180 个 AUD,正好一帧一个)。
+        // 再挂 h264_metadata=aud=insert 就变成 **每帧两个 AUD** —— 实测 360 个。
+        // 后果:App 端按 AUD 切帧会切出一半的空帧,白白多做一轮解析与喂帧。
+        if (_encoder != "h264_mf")
+        {
+            arguments.AddRange(["-bsf:v", "h264_metadata=aud=insert"]);
+        }
+
         arguments.AddRange([
             "-b:v", _bitrate,
-            // 插入访问单元分隔符:App 端据此切分帧,不用自己判断帧边界
-            "-bsf:v", "h264_metadata=aud=insert",
             // 裸 H.264 写到 stdout;flush_packets 让每个包立刻写出,不在 muxer 里攒
             "-flush_packets", "1",
             "-f", "h264", "-",

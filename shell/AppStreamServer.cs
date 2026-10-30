@@ -264,6 +264,8 @@ internal sealed class AppStreamServer : IDisposable
         long frames = 0;
         long lastReport = Environment.TickCount64;
         long lastFrames = 0;
+        long duplicateFrames = 0;
+        long lastDuplicates = 0;
 
         // 按访问单元切分,并给每帧加 4 字节长度前缀(协议 VDS2)。
         //
@@ -291,14 +293,23 @@ internal sealed class AppStreamServer : IDisposable
                     network.Write(length, 0, 4);
                     network.Write(accessUnit, 0, accessUnit.Length);
                     frames += 1;
+
+                    // 极小帧基本就是"画面没变"的重复帧。
+                    // 采集跟不上目标帧率时,ffmpeg 会用重复帧补齐,表面看帧率达标,
+                    // 实际画面更新次数没变 —— 靠这个比例可以识破"虚假帧率"。
+                    if (accessUnit.Length < 2048) duplicateFrames += 1;
                 }
 
                 var now = Environment.TickCount64;
                 if (now - lastReport >= 1000)
                 {
                     var delta = frames - lastFrames;
-                    Log.Info($"[统计] 已发送 {frames} 帧(+{delta}/s) @ {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}");
+                    var dupDelta = duplicateFrames - lastDuplicates;
+                    var dupPercent = delta > 0 ? dupDelta * 100.0 / delta : 0;
+                    Log.Info($"[统计] 已发送 {frames} 帧(+{delta}/s,重复 {dupPercent:F0}%)" +
+                             $" @ {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}");
                     lastFrames = frames;
+                    lastDuplicates = duplicateFrames;
                     lastReport = now;
                 }
             }
@@ -407,6 +418,14 @@ internal sealed class AppStreamServer : IDisposable
         }
 
         arguments.AddRange([
+            // 显式规整输出帧率。
+            //
+            // 不加这行时,90/120(以及 72/75)会让 h264_mf 报
+            //   could not set output type (MF_E_UNSUPPORTED_D3D_TYPE)
+            // 原因是 gdigrab 的时间基是 1/1000000(tbr=1000k),Media Foundation
+            // 无法据此构造合法的媒体类型。加上 -r 后 ffmpeg 会用正常的帧率表达,
+            // 实测 120fps 也能正常打开编码器。
+            "-r", _fps.ToString(),
             "-b:v", _bitrate,
             // 裸 H.264 写到 stdout;flush_packets 让每个包立刻写出,不在 muxer 里攒
             "-flush_packets", "1",

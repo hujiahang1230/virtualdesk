@@ -59,6 +59,7 @@
   <ItemGroup>
     <!-- 只需要一个极小的嵌入式键值存储,不用完整数据库服务 -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
   </ItemGroup>
 
   <ItemGroup Condition="Exists('$(WebBundlePath)')">

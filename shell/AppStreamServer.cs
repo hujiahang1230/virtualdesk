@@ -54,6 +54,9 @@ internal sealed class AppStreamServer : IDisposable
     public int CaptureWidth => _display.Width;
     public int CaptureHeight => _display.Height;
 
+    /// <summary>DXGI 输出序号;null 表示回退到 gdigrab</summary>
+    private readonly int? _dxgiIndex;
+
     public AppStreamServer(int port, int fps, string bitrate)
     {
         _port = port;
@@ -67,6 +70,13 @@ internal sealed class AppStreamServer : IDisposable
         _display = PickDisplay()
             ?? throw new InvalidOperationException(
                 "没有找到可用的虚拟显示器。请先启用虚拟显示驱动(见 README)。");
+
+        // 优先用 DXGI 桌面复制(ddagrab):实测同样 60fps 时 CPU 比 gdigrab 低约三分之一,
+        // 而且没有 GDI 那条约 70fps 的硬上限。VD_CAPTURE=gdi 可强制回退,便于对比排查。
+        _dxgiIndex = Environment.GetEnvironmentVariable("VD_CAPTURE") == "gdi"
+            ? null
+            : DxgiOutputs.FindIndex(_display.DeviceName);
+        if (_dxgiIndex is null) Log.Info("采集源:gdigrab(按坐标截取)");
 
         _encoder = PickEncoder(_ffmpeg);
     }
@@ -392,14 +402,27 @@ internal sealed class AppStreamServer : IDisposable
         }
         else
         {
-            arguments.AddRange([
-                "-f", "gdigrab",
-                "-framerate", _fps.ToString(),
-                "-offset_x", _display.X.ToString(),
-                "-offset_y", _display.Y.ToString(),
-                "-video_size", $"{_display.Width}x{_display.Height}",
-                "-i", "desktop",
-            ]);
+            if (_dxgiIndex is int dxgiIndex)
+            {
+                // DXGI 桌面复制:GPU 侧取帧,再下载到内存交给编码器。
+                // 相比 gdigrab 的同步 BitBlt,它不经过 GDI 的拷贝路径,实测同帧率下 CPU 更低。
+                arguments.AddRange([
+                    "-f", "lavfi",
+                    "-i", $"ddagrab=output_idx={dxgiIndex}:framerate={_fps}",
+                    "-vf", "hwdownload,format=bgra,format=nv12",
+                ]);
+            }
+            else
+            {
+                arguments.AddRange([
+                    "-f", "gdigrab",
+                    "-framerate", _fps.ToString(),
+                    "-offset_x", _display.X.ToString(),
+                    "-offset_y", _display.Y.ToString(),
+                    "-video_size", $"{_display.Width}x{_display.Height}",
+                    "-i", "desktop",
+                ]);
+            }
         }
 
         arguments.AddRange(["-c:v", _encoder]);

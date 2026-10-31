@@ -180,5 +180,27 @@ if (total < 5 * 1024 * 1024) {
   throw new Error(`产物体积异常偏小(${mb(total)}),可能没有自包含运行时。`);
 }
 
+// 代码签名:消除 Windows Defender SmartScreen 的「发布者: 未知」拦截。
+//
+// 不签名的后果:双击 exe 会弹「Windows 已保护你的电脑」,要点「仍要运行」才继续。
+// 这里用自签名证书,只对**信任了该证书的机器**有效;换台机器运行仍会提示
+// (要彻底免提示只能买公开 CA 的代码签名证书,EV 类型才有即时信誉)。
+//
+// 签名失败不阻断打包:没有证书的机器照样能出包,只是会弹 SmartScreen。
+if (process.env.VD_SKIP_SIGN !== '1') {
+  try {
+    const { spawnSync } = await import('node:child_process');
+    const script = join(here, 'sign-exe.ps1');
+    const result = spawnSync('pwsh', ['-NoProfile', '-File', script, '-DistDir', distDir], {
+      stdio: 'inherit',
+    });
+    if (result.status !== 0) {
+      console.warn('[pack] ⚠ 代码签名未完成(SmartScreen 可能提示「未知发布者」)');
+    }
+  } catch (error) {
+    console.warn('[pack] ⚠ 代码签名出错:' + error.message);
+  }
+}
+
 console.log('[pack] 完成。把 dist 整个目录拷走,双击「' + ENTRY_NAME + '」即可运行。');
 console.log('[pack] 不需要 Node / PostgreSQL / .NET 运行时。');

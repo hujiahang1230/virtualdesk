@@ -243,9 +243,14 @@ node tools/build-apk.mjs
 ### 4.3 打包 exe
 
 ```powershell
-npm run app:build          # 构建前端 + APK + dotnet publish + 编译启动器
+npm run app:build          # 构建前端 + APK + dotnet publish + 编译启动器 + 代码签名
 npm run app:run            # 直接运行
 ```
+
+> 打包最后会调用 `shell/scripts/sign-exe.ps1` 做**本机自签名**,避免双击时被
+> SmartScreen 拦成「未知发布者」(详见 [六、常见问题](#六常见问题))。
+> 首次运行会生成证书并写进当前用户的信任存储,不需要管理员权限。
+> 不想签名可以设 `VD_SKIP_SIGN=1`。
 
 产物:
 
@@ -333,6 +338,48 @@ src/                           Web 版前端(Next.js,见附录)
 ---
 
 ## 六、常见问题
+
+### 双击时提示「Windows 已保护你的电脑 / 发布者: 未知」?
+
+那是 **Windows Defender SmartScreen** 对**未签名程序**的例行拦截,不是病毒告警,
+点「更多信息 → 仍要运行」就能用。
+
+**根本原因**:exe 没有代码签名。SmartScreen 对"无签名 + 无下载信誉"的可执行文件
+一律弹这个框;文件本身没有"下载标记"(Zone.Identifier),所以 `Unblock-File`
+之类对它无效。
+
+**现在的处理**:打包时会自动做**本机自签名**(`shell/scripts/sign-exe.ps1`):
+
+1. 生成一张代码签名证书放到 `CurrentUser\My`(不需要管理员)
+2. 用 `CertAddEncodedCertificateToStore` 把它的公钥写入当前用户的
+   「受信任根」和「受信任发布者」—— 这一步**绕过了系统安装证书的确认弹窗**,
+   所以在无人值守环境也能完成
+3. 用 `Set-AuthenticodeSignature` 给两个 exe 签 SHA256 并加时间戳
+
+签好后 `Get-AuthenticodeSignature` 显示 `Valid`、签署者为 `CN=VirtualDesk Local Build`,
+SmartScreen 就不再把它当成"未知发布者"。
+
+**局限(必须知道)**:
+
+| 场景 | 表现 |
+| --- | --- |
+| 本机运行(证书已信任) | ✅ 不再拦截 |
+| 拷到**别的**电脑运行 | ⚠️ 会再次提示"未知发布者",因为那台机器不信任这张自签名证书 |
+| 想让所有人都免提示 | 只能买公开 CA 的代码签名证书(EV 类型才有即时信誉,约每年数百元) |
+
+要在别的机器上也免提示,把那台机器的证书信任一次即可(需管理员):
+
+```powershell
+# 导出证书(在已签名的机器上)
+$c = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Subject -like '*VirtualDesk*' }
+Export-Certificate -Cert $c -FilePath VirtualDesk.cer
+
+# 在目标机器上以管理员身份导入
+Import-Certificate -FilePath .\VirtualDesk.cer -CertStoreLocation Cert:\LocalMachine\Root
+Import-Certificate -FilePath .\VirtualDesk.cer -CertStoreLocation Cert:\LocalMachine\TrustedPublisher
+```
+
+不想签名的构建可以设 `VD_SKIP_SIGN=1` 跳过这一步。
 
 ### 点「启动副屏」后平板又弹安装框?
 

@@ -20,8 +20,8 @@ namespace VirtualDesk.App;
 internal sealed class MainForm : Form
 {
     private const int DefaultPort = 5000;
-    private const int DefaultFps = 60;
-    private const string DefaultBitrate = "12M";
+    private const int DefaultFps = 120;
+    private const string DefaultBitrate = "20M";
 
     private readonly string _dataDir;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 2000 };

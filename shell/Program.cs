@@ -98,7 +98,7 @@ internal static class Program
     ///   5. adb shell am start 拉起 App,并保持屏幕常亮
     ///
     /// 用法:
-    ///   --stream-app                 默认端口 5000 / 60fps / 12M
+    ///   --stream-app                 默认端口 5000 / 120fps / 20M
     ///   --stream-app 5000 30 8M      指定端口/帧率/码率(帧率调低可省 CPU/带宽)
     ///   --stream-app --fit           完整显示(留黑边),默认是铺满(裁切)
     ///   --stream-app 5000 30 8M      指定端口/帧率/码率
@@ -113,11 +113,11 @@ internal static class Program
             Log.Info("===== 一键副屏(Android App)=====");
 
             var port = index + 1 < args.Length && int.TryParse(args[index + 1], out var p) ? p : 5000;
-            // 默认 60fps:虚拟屏本身就是 60Hz,实测 1080p@60 只占 1.7 个核、能跑满。
+            // 默认 120fps:平板面板是 120Hz,与流帧率 1:1 时节奏最均匀、显示延迟最低
             // 早先默认 30 是照搬了"GDI 最多 45fps"的旧测量结果 —— 那是在机器有其他负载时测的。
-            var fps = index + 2 < args.Length && int.TryParse(args[index + 2], out var f) ? f : 60;
+            var fps = index + 2 < args.Length && int.TryParse(args[index + 2], out var f) ? f : 120;
             // USB 直连带宽充裕,12M 给 60fps 留足余量(1080p60 一般 6~12M)
-            var bitrate = index + 3 < args.Length ? args[index + 3] : "12M";
+            var bitrate = index + 3 < args.Length ? args[index + 3] : "20M";
 
             // ---- adb ----
             // VD_SKIP_ADB=1 时跳过 ADB 环节,只起推流服务。
@@ -342,8 +342,8 @@ internal static class Program
                 ? args[index + 1]
                 : null;
             var port = index + 2 < args.Length && int.TryParse(args[index + 2], out var p) ? p : 5000;
-            var fps = index + 3 < args.Length && int.TryParse(args[index + 3], out var f) ? f : 60;
-            var bitrate = index + 4 < args.Length ? args[index + 4] : "12M";
+            var fps = index + 3 < args.Length && int.TryParse(args[index + 3], out var f) ? f : 120;
+            var bitrate = index + 4 < args.Length ? args[index + 4] : "20M";
 
             if (host is null)
             {

@@ -1,4 +1,4 @@
-# 给 dist 里的 exe 做本机自签名,消除 SmartScreen 的「发布者: 未知」拦截。
+﻿# 给 dist 里的 exe 做本机自签名,消除 SmartScreen 的「发布者: 未知」拦截。
 #
 # 为什么需要:
 #   程序是本地构建的,没有任何代码签名证书。Windows Defender SmartScreen 对

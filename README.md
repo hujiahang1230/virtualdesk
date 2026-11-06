@@ -44,6 +44,9 @@ winget install --id=VirtualDrivers.Virtual-Display-Driver -e
 双击 `virtualdesk.exe` → 点 **「▶ 启动副屏」**。平板会自动打开 App 并显示扩展桌面,
 **平板上不需要任何操作**。
 
+> 如果 Windows 弹出「Windows 已保护你的电脑」,改双击 **`启动 VirtualDesk.bat`**,
+> 它等价于双击 exe 但不会触发这个提示(原因见下面「常见问题」的第一条)。
+
 面板会显示平板型号、虚拟屏分辨率、编码器和端口。以后每次:插线 → 双击 → 点一下。
 
 ---
@@ -115,19 +118,50 @@ virtualdesk.exe ── adb reverse tcp:5000 ── USB ──► 平板 App
 
 ## 常见问题
 
-### 双击提示「Windows 已保护你的电脑 / 发布者: 未知」
+### 双击提示「Windows 已保护你的电脑」
 
-SmartScreen 对**未签名程序**的例行拦截,不是病毒告警。打包时已做本机自签名
-(`shell/scripts/sign-exe.ps1`):生成证书 → 用 `CertAddEncodedCertificateToStore`
-写入当前用户「受信任根 / 受信任发布者」(绕过系统确认弹窗)→ 签 SHA256 并加时间戳。
+这是 **Windows Defender SmartScreen** 的例行拦截,不是病毒告警。程序是本地构建、
+没有公开 CA 的代码签名证书,SmartScreen 就会拦。
 
-自签名只对**信任了该证书的机器**有效。拷到别的电脑仍会提示,此时:
+打包时已做**本机自签名**(`shell/scripts/sign-exe.ps1`),效果是弹窗里的
+「发布者: 未知」变成 `CN, VirtualDesk, VirtualDesk Local Build` —— 但**弹窗本身还在**。
 
-- 直接点「仍要运行」,或
-- 关闭「Windows 安全中心 → 应用和浏览器控制 → 基于信誉的保护 → 检查应用和文件」,或
-- 把证书导入目标机器(管理员):`Import-Certificate -FilePath VirtualDesk.cer -CertStoreLocation Cert:\LocalMachine\Root`
+原因:SmartScreen 有两道关卡。
 
-想让所有人都免提示,只能买公开 CA 的代码签名证书(EV 类型才有即时信誉)。
+| 关卡 | 自签名能过吗 |
+| --- | --- |
+| 签名有效性 | ✅ 能。证书已写入当前用户的「受信任根 / 受信任发布者」 |
+| **云端应用信誉** | ❌ 不能。信誉看的是程序在微软库里的下载量 + 公开 CA 背书,自签名两样都没有 |
+
+**三种免弹窗的办法,按推荐程度:**
+
+**① 用 `启动 VirtualDesk.bat`(推荐)**
+
+SmartScreen 的应用检查挂在资源管理器启动程序的路径上;经 `cmd` 启动就不经过它。
+打包时会自动生成这个脚本,双击它等同于双击 exe,还能透传参数:
+
+```
+启动 VirtualDesk.bat
+启动 VirtualDesk.bat --stream-app 5000 60 12M
+```
+
+好处是**不用关掉系统的安全功能**。
+
+**② 关掉「检查应用和文件」**
+
+```
+Windows 安全中心 → 应用和浏览器控制 → 基于信誉的保护设置
+  → 关闭「检查应用和文件」
+```
+
+一次性设置,以后任何构建都不再弹。代价是全局降低了这层防护(Defender 的病毒扫描仍然工作)。
+
+**③ 买公开 CA 的代码签名证书**
+
+唯一能让**所有机器**都免提示的办法。普通 OV 证书仍需要积累信誉,
+只有 EV 证书有即时信誉,年费数百元,且需要企业身份验证。
+
+> 该弹窗不影响功能:点「更多信息 → 仍要运行」即可正常使用。
 
 ### 平板又弹安装框
 
@@ -221,6 +255,7 @@ PC 端才会把它装到平板上。
 shell/dist/
   virtualdesk.exe          0.6 MiB   原生启动器(MinGW C++,双击这个)
   virtualdesk-core.exe    48.6 MiB   主程序(.NET 自包含单文件)
+  启动 VirtualDesk.bat               绕过 SmartScreen 的启动入口
   virtualdesk-data/                  首次运行后生成
 ```
 

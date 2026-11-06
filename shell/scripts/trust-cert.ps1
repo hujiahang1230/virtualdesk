@@ -1,4 +1,4 @@
-# 把证书直接写入当前用户的存储(绕过 CryptUIWizImport 的交互确认框)
+﻿# 把证书直接写入当前用户的存储(绕过 CryptUIWizImport 的交互确认框)
 #
 # 为什么需要:PowerShell 的 X509Store.Add / Import-Certificate 在写入「受信任根」时
 # 会走 CryptUIWizImport,弹一个"是否安装此证书"的确认框并等待用户点击。

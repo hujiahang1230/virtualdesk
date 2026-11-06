@@ -20,7 +20,7 @@
  *   node shell/scripts/pack.mjs --no-web   # 跳过前端重建(前端没改时省时间)
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -156,6 +156,28 @@ const entryPath = join(distDir, ENTRY_NAME);
 copyFileSync(builtLauncher, entryPath);
 console.log(`[pack] 启动器 ${mb(statSync(entryPath).size)}`);
 
+// 5) 生成一个"绕过 SmartScreen"的启动脚本
+//
+// 为什么需要:双击 exe 时,资源管理器会先做「应用和文件检查」,对没有云信誉的
+// 程序弹「Windows 已保护你的电脑」。本机自签名只能让发布者不再是"未知",
+// 解决不了云端信誉那一步。
+// 经 cmd 的 start 启动则不经过外壳这道检查,所以提供一个 .bat 作为日常入口。
+// 内容保持纯 ASCII,避免不同代码页下 cmd 解析中文注释出问题。
+const BAT_NAME = '启动 VirtualDesk.bat';
+writeFileSync(
+  join(distDir, BAT_NAME),
+  [
+    '@echo off',
+    'rem Launch VirtualDesk without the Explorer app-reputation check.',
+    'rem Double-clicking the .exe directly can trigger SmartScreen; going through',
+    'rem cmd + start skips that shell check. Arguments are forwarded.',
+    'start "" "%~dp0' + ENTRY_NAME + '" %*',
+    '',
+  ].join('\r\n'),
+  'utf8',
+);
+console.log(`[pack] 启动脚本 ${BAT_NAME}`);
+
 // 4) 校验
 const files = readdirSync(distDir, { withFileTypes: true }).filter((e) => e.isFile());
 const names = files.map((f) => f.name).sort();
@@ -164,7 +186,7 @@ for (const name of names) {
   console.log(`  ${name}  ${mb(statSync(join(distDir, name)).size)}`);
 }
 
-const expected = [CORE_NAME, ENTRY_NAME].sort();
+const expected = [CORE_NAME, ENTRY_NAME, BAT_NAME].sort();
 const unexpected = names.filter((n) => !expected.includes(n));
 if (unexpected.length > 0) {
   console.warn('[pack] ⚠ 出现了预期之外的文件: ' + unexpected.join(', '));
@@ -180,22 +202,38 @@ if (total < 5 * 1024 * 1024) {
   throw new Error(`产物体积异常偏小(${mb(total)}),可能没有自包含运行时。`);
 }
 
-// 代码签名:消除 Windows Defender SmartScreen 的「发布者: 未知」拦截。
+// 代码签名:让 SmartScreen 至少不再把发布者显示为「未知」。
 //
-// 不签名的后果:双击 exe 会弹「Windows 已保护你的电脑」,要点「仍要运行」才继续。
-// 这里用自签名证书,只对**信任了该证书的机器**有效;换台机器运行仍会提示
-// (要彻底免提示只能买公开 CA 的代码签名证书,EV 类型才有即时信誉)。
+// 注意:自签名**解决不了** SmartScreen 的第二道关卡(云端信誉)——
+// 它靠程序在微软库里的下载量与公开 CA 背书,自签名没有这两样,所以仍可能弹窗。
+// 日常免打扰优先用打包时生成的「启动 VirtualDesk.bat」,或关掉「检查应用和文件」。
 //
-// 签名失败不阻断打包:没有证书的机器照样能出包,只是会弹 SmartScreen。
+// 签名失败不阻断打包:没有证书的机器照样能出包。
 if (process.env.VD_SKIP_SIGN !== '1') {
   try {
     const { spawnSync } = await import('node:child_process');
     const script = join(here, 'sign-exe.ps1');
-    const result = spawnSync('pwsh', ['-NoProfile', '-File', script, '-DistDir', distDir], {
-      stdio: 'inherit',
-    });
-    if (result.status !== 0) {
-      console.warn('[pack] ⚠ 代码签名未完成(SmartScreen 可能提示「未知发布者」)');
+
+    // 不能硬编码 pwsh:很多机器只装了 Windows PowerShell 5.1(powershell.exe)。
+    // 两个都试一遍,取能跑起来的那个。
+    let shell = null;
+    for (const candidate of ['pwsh', 'powershell']) {
+      const probe = spawnSync(candidate, ['-NoProfile', '-Command', 'exit 0']);
+      if (probe.status === 0) {
+        shell = candidate;
+        break;
+      }
+    }
+
+    if (!shell) {
+      console.warn('[pack] ⚠ 找不到 PowerShell,跳过代码签名');
+    } else {
+      const result = spawnSync(shell, ['-NoProfile', '-File', script, '-DistDir', distDir], {
+        stdio: 'inherit',
+      });
+      if (result.status !== 0) {
+        console.warn('[pack] ⚠ 代码签名未完成(可用「启动 VirtualDesk.bat」绕过弹窗)');
+      }
     }
   } catch (error) {
     console.warn('[pack] ⚠ 代码签名出错:' + error.message);

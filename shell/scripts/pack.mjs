@@ -83,6 +83,19 @@ const apkPath = join(projectRoot, 'tools', 'apk', 'virtualdesk-viewer.apk');
 const javaSource = join(projectRoot, 'android', 'app', 'src', 'main', 'java',
   'com', 'virtualdesk', 'viewer', 'MainActivity.java');
 const manifestSource = join(projectRoot, 'android', 'app', 'src', 'main', 'AndroidManifest.xml');
+const resSource = join(projectRoot, 'android', 'app', 'src', 'main', 'res');
+
+/** 递归找出目录里最新被修改的时间;目录不存在返回 0 */
+function newestMtime(dir) {
+  if (!existsSync(dir)) return 0;
+  let newest = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    const time = entry.isDirectory() ? newestMtime(full) : statSync(full).mtimeMs;
+    if (time > newest) newest = time;
+  }
+  return newest;
+}
 
 function apkNeedsBuild() {
   if (!existsSync(apkPath)) return true;
@@ -90,6 +103,11 @@ function apkNeedsBuild() {
   for (const source of [javaSource, manifestSource]) {
     if (existsSync(source) && statSync(source).mtimeMs > apkTime) return true;
   }
+  // 图标等资源也算输入:改图标后必须重建,否则 exe 里还是旧 APK
+  if (newestMtime(resSource) > apkTime) return true;
+  // 构建脚本自身也要算:改 versionCode 必须触发重建,否则版本号不会变
+  const buildScript = join(projectRoot, 'tools', 'build-apk.mjs');
+  if (existsSync(buildScript) && statSync(buildScript).mtimeMs > apkTime) return true;
   return false;
 }
 

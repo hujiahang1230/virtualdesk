@@ -253,6 +253,26 @@ npm run app:run                                          # 运行
 改动平板端功能时,把 `tools/build-apk.mjs` 里的 `APK_VERSION_CODE` 加一,
 PC 端才会把它装到平板上。
 
+### 平板 App 图标
+
+![Android 图标](docs/android-icon.png)
+
+图形是**两块屏幕**叠在一起:右上描边的是电脑显示器,左下实心的是平板 ——
+直接表达"扩展出一块新屏幕",不画箭头也读得懂。配色沿用 PC 端界面的深海军蓝 + 青色。
+四周留白按自适应图标的安全区算过,缩到 32px 仍能分辨。
+
+图标不是手动切的图,而是脚本生成:
+
+```powershell
+python android/make-android-icon.py
+```
+
+会输出 5 个密度的 `ic_launcher.png` / `ic_launcher_round.png` / `ic_launcher_foreground.png`,
+以及 `mipmap-anydpi-v26/` 下的自适应图标描述和 `values/colors.xml`。
+
+`aapt2` 需要先 `compile` 资源再 `link`,直接把 `res/` 目录交给 link 是不行的;
+`pack.mjs` 会把 `res/` 的修改时间也当作重建条件,改完图标重新打包即可生效。
+
 产物:
 
 ```

@@ -32,6 +32,8 @@ const platformJar = join(sdk, 'platforms', 'android-34', 'android.jar');
 const androidDir = join(projectRoot, 'android', 'app', 'src', 'main');
 const manifest = join(androidDir, 'AndroidManifest.xml');
 const javaRoot = join(androidDir, 'java');
+// 图标等资源都在 res/ 下;由 android/make-android-icon.py 生成
+const resRoot = join(androidDir, 'res');
 
 const out = join(projectRoot, 'tools', 'apk');
 const work = join(out, 'work');
@@ -240,8 +242,8 @@ function collect(dir, suffix) {
 // 那么每次重新构建(哪怕只改一行注释)哈希都会变,平板就会被重装一次并弹确认框。
 // 改为按 versionCode 比较后,只有**功能真的变了**才需要重装 —— 这才是用户的预期。
 // 改平板端功能时把它 +1 即可。
-const APK_VERSION_CODE = 10;
-const APK_VERSION_NAME = '2.0';
+const APK_VERSION_CODE = 12;
+const APK_VERSION_NAME = '2.2';
 
 console.log('构建 Android APK');
 check(manifest, 'AndroidManifest.xml');
@@ -252,9 +254,22 @@ rmSync(work, { recursive: true, force: true });
 mkdirSync(join(work, 'classes'), { recursive: true });
 mkdirSync(out, { recursive: true });
 
-// 1. aapt2 link:清单 + 资源表 → 基础 APK
+// 1. aapt2 编译资源(图标、颜色),再 link 成基础 APK
+//
+// 资源必须先 compile 成 .flat 再交给 link;直接把 res/ 目录传给 link 是不行的。
+// 没有资源时 aapt2 link 会跳过这一步,所以早期版本(无图标)能直接构建。
+let compiledRes = null;
+if (existsSync(resRoot) && readdirSync(resRoot).length > 0) {
+  compiledRes = join(work, 'res.zip');
+  run(join(buildTools, 'aapt2.exe'), [
+    'compile',
+    '--dir', resRoot,
+    '-o', compiledRes,
+  ], 'aapt2 compile');
+}
+
 const baseApk = join(work, 'base.apk');
-run(join(buildTools, 'aapt2.exe'), [
+const linkArgs = [
   'link',
   '-o', baseApk,
   '-I', platformJar,
@@ -263,7 +278,9 @@ run(join(buildTools, 'aapt2.exe'), [
   '--target-sdk-version', TARGET_SDK,
   '--version-code', String(APK_VERSION_CODE),
   '--version-name', APK_VERSION_NAME,
-], 'aapt2 link');
+];
+if (compiledRes) linkArgs.push(compiledRes);
+run(join(buildTools, 'aapt2.exe'), linkArgs, 'aapt2 link');
 
 // 2. javac:必须 --release 17,否则 class 文件版本高于 d8 支持范围
 const javaFiles = collect(javaRoot, '.java');

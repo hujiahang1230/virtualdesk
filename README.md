@@ -44,8 +44,9 @@ winget install --id=VirtualDrivers.Virtual-Display-Driver -e
 双击 `virtualdesk.exe` → 点 **「▶ 启动副屏」**。平板会自动打开 App 并显示扩展桌面,
 **平板上不需要任何操作**。
 
-> 如果 Windows 弹出「Windows 已保护你的电脑」,改双击 **`启动 VirtualDesk.bat`**,
-> 它等价于双击 exe 但不会触发这个提示(原因见下面「常见问题」的第一条)。
+> 如果 Windows 弹出「Windows 已保护你的电脑」,**改双击 `VirtualDesk.lnk` 或
+> `启动 VirtualDesk.bat`** —— 两者都等价于双击 exe,但不经过资源管理器那道检查,
+> 所以不会弹窗(原因见「常见问题」第一条)。
 
 面板会显示平板型号、虚拟屏分辨率、编码器和端口。以后每次:插线 → 双击 → 点一下。
 
@@ -135,10 +136,13 @@ virtualdesk.exe ── adb reverse tcp:5000 ── USB ──► 平板 App
 
 **三种免弹窗的办法,按推荐程度:**
 
-**① 用 `启动 VirtualDesk.bat`(推荐)**
+**① 用 `VirtualDesk.lnk` 或 `启动 VirtualDesk.bat`(推荐)**
 
 SmartScreen 的应用检查挂在资源管理器启动程序的路径上;经 `cmd` 启动就不经过它。
-打包时会自动生成这个脚本,双击它等同于双击 exe,还能透传参数:
+打包时会自动生成这两个入口:
+
+- `VirtualDesk.lnk` —— 带程序图标的快捷方式,双击它最像"打开一个应用"
+- `启动 VirtualDesk.bat` —— 同样的行为,可以传参数
 
 ```
 启动 VirtualDesk.bat
@@ -256,6 +260,7 @@ shell/dist/
   virtualdesk.exe          0.6 MiB   原生启动器(MinGW C++,双击这个)
   virtualdesk-core.exe    48.6 MiB   主程序(.NET 自包含单文件)
   启动 VirtualDesk.bat               绕过 SmartScreen 的启动入口
+  VirtualDesk.lnk                    同上,带程序图标
   virtualdesk-data/                  首次运行后生成
 ```
 

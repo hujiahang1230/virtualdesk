@@ -178,6 +178,41 @@ writeFileSync(
 );
 console.log(`[pack] 启动脚本 ${BAT_NAME}`);
 
+// 6) 生成带图标的快捷方式(指向 bat,而不是 exe)
+//
+// 目的:给一个"看起来像应用"的入口。快捷方式的目标是 .bat,外壳启动的是 cmd,
+// 所以同样绕开 SmartScreen 的应用检查;图标用程序的 ico,不会显示成齿轮。
+// 失败不阻断打包(某些系统禁用 WScript.Shell)。
+const LNK_NAME = 'VirtualDesk.lnk';
+try {
+  const iconPath = join(here, '..', 'assets', 'icon.ico');
+  const ps = [
+    '$ws = New-Object -ComObject WScript.Shell',
+    `$sc = $ws.CreateShortcut('${join(distDir, LNK_NAME)}')`,
+    `$sc.TargetPath = '${join(distDir, BAT_NAME)}'`,
+    `$sc.WorkingDirectory = '${distDir}'`,
+    (existsSync(iconPath) ? `$sc.IconLocation = '${iconPath},0'` : ''),
+    "$sc.Description = 'VirtualDesk'",
+    '$sc.WindowStyle = 7',
+    '$sc.Save()',
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  const shellForLnk = existsSync(join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'))
+    ? join(process.env.WINDIR ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : 'powershell';
+
+  const lnk = spawnSync(shellForLnk, ['-NoProfile', '-Command', ps], { encoding: 'utf8' });
+  if (lnk.status === 0 && existsSync(join(distDir, LNK_NAME))) {
+    console.log(`[pack] 快捷方式 ${LNK_NAME}`);
+  } else {
+    console.warn('[pack] ⚠ 快捷方式生成失败(不影响使用)');
+  }
+} catch (error) {
+  console.warn('[pack] ⚠ 快捷方式生成出错:' + error.message);
+}
+
 // 4) 校验
 const files = readdirSync(distDir, { withFileTypes: true }).filter((e) => e.isFile());
 const names = files.map((f) => f.name).sort();
@@ -186,7 +221,7 @@ for (const name of names) {
   console.log(`  ${name}  ${mb(statSync(join(distDir, name)).size)}`);
 }
 
-const expected = [CORE_NAME, ENTRY_NAME, BAT_NAME].sort();
+const expected = [CORE_NAME, ENTRY_NAME, BAT_NAME, LNK_NAME].sort();
 const unexpected = names.filter((n) => !expected.includes(n));
 if (unexpected.length > 0) {
   console.warn('[pack] ⚠ 出现了预期之外的文件: ' + unexpected.join(', '));
@@ -228,7 +263,7 @@ if (process.env.VD_SKIP_SIGN !== '1') {
     if (!shell) {
       console.warn('[pack] ⚠ 找不到 PowerShell,跳过代码签名');
     } else {
-      const result = spawnSync(shell, ['-NoProfile', '-File', script, '-DistDir', distDir], {
+      const result = spawnSync(shell, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-DistDir', distDir], {
         stdio: 'inherit',
       });
       if (result.status !== 0) {
